@@ -132,22 +132,318 @@ The system is governed by four architectural principles that shaped every implem
 
 **Progressive Disclosure.** Dashboard pages reveal information progressively: the landing page shows aggregate statistics (total analyses, failure category distribution, latency trends, recent reports); the Analyse page provides live pipeline visibility with stage-level granularity; the Reports page enables filtering and discovery; the Report Detail page presents the complete evidence package, LLM analysis, confidence score, and executable remediation commands in a structured layout.
 
-### 3.2 Topology
+### 3.2 Context Diagram
 
-The system comprises nine runtime components orchestrated as Docker containers:
+The system's external interactions and internal service topology are shown in the following Mermaid diagram, which identifies three trust domains: the Platform (green), the Kubernetes Cluster (blue), and the LLM Vendor (red). Every arrow crossing a trust boundary represents a security control point — either read-only kubectl access, HTTPS with bearer token authentication, or redacted evidence.
 
+```mermaid
+flowchart LR
+    User["On-call Engineer"]
+    Browser["Next.js Dashboard\n:3000"]
+
+    subgraph Platform["K8s LLM Incident Analyser (microservices)"]
+        GW["gateway-svc :8000\n(public API)"]
+        ORCH["orchestrator-svc :8001\n(job state machine)"]
+        COLL["collector-svc :8002"]
+        PROC["processor-svc :8003"]
+        LLM["llm-svc :8004"]
+        REPO["reports-svc :8005"]
+        SCEN["scenario-svc :8006"]
+        REDIS[("Redis :6379\njob state + pub/sub")]
+        SQLITE[("SQLite\nincidents + jobs")]
+    end
+
+    subgraph Cluster["Kubernetes Cluster (k3s / minikube / kind)"]
+        DemoApp["demo-app pod\nnamespace: demo"]
+        K8sAPI["kube-apiserver"]
+    end
+
+    subgraph Vendor["LLM Vendor"]
+        Provider["OpenAI / Anthropic /\nDeepSeek / Mock"]
+    end
+
+    User --> Browser
+    Browser -->|"REST + SSE"| GW
+    GW --> ORCH
+    GW --> REPO
+    GW --> SCEN
+    ORCH --> COLL --> PROC --> LLM --> REPO
+    ORCH --> REDIS
+    REPO --> SQLITE
+    COLL -->|"kubectl (read-only)"| K8sAPI
+    SCEN -->|"kubectl patch (write)"| K8sAPI
+    K8sAPI -.-> DemoApp
+    LLM -->|"HTTPS + Bearer token"| Provider
+    Provider -->|"JSON IncidentReport"| LLM
 ```
-Browser ──HTTPS──▶ Gateway (:8000) ──HTTP──▶ Orchestrator (:8001) ──▶ Collector (:8002)
-                                     │                                     Processor (:8003)
-                                     │                                     LLM (:8004)
-                                     │                                     Reports (:8005)
-                                     ├──HTTP──▶ Reports (:8005)            Redis (:6379)
-                                     └──HTTP──▶ Scenario (:8006)
-                                               
-Frontend (:3000) ──HTTP──▶ Gateway (:8000)
-Redis (:6379) ←──▶ Orchestrator (:8001)
-SQLite ←──▶ Reports (:8005)
+
+### 3.3 The Three Communication Planes
+
+Understanding the system is easiest when separating its three kinds of traffic:
+
+| Plane | Technology | Carries |
+|-------|-----------|---------|
+| **Public** | HTTP/JSON + SSE, browser ↔ gateway :8000 | All `/api/*` endpoints, `/health`, the job event stream |
+| **Internal sync** | HTTP/JSON between services (httpx) | Pipeline hops (`/collect`, `/process`, `/analyse`, `/reports`), proxy hops, `/health` checks |
+| **Internal async** | Redis hashes + pub/sub | Job state (`job:{job_id}`), event fanout (`job:{job_id}:events`), future work queue (`job:queue`) |
+
+There is no message broker and no gRPC in v1 of the platform — both are deliberate deferrals, documented with migration plans in the contracts directory. The three-plane separation ensures that public traffic has rate limiting and CORS enforcement, internal sync traffic has per-stage timeouts and structured error handling, and internal async traffic has pub/sub fanout with multi-client support.
+
+### 3.4 Deployment Topology (Docker Compose)
+
+The reference topology is an 11-container Compose stack (7 platform services + Redis + frontend + the demo workload with its PostgreSQL database). The authoritative topology is specified in the contracts directory; the repo-root docker-compose.yml mirrors it with repo-relative build contexts.
+
+```mermaid
+flowchart TD
+    Browser["Browser"] -->|"http://localhost:3000"| FE
+
+    subgraph Compose["Docker Compose — analyser-net (11 containers)"]
+        FE["frontend :3000<br>Next.js 15 standalone (node server.js)"]
+        GW["gateway-svc :8000<br>public API · CORS · 60 req/min/IP · SSE proxy"]
+        ORCH["orchestrator-svc :8001<br>job state machine · SSE pub/sub"]
+        REPO["reports-svc :8005<br>SQLite (WAL) · ./data:/data"]
+        SCEN["scenario-svc :8006<br>kubectl patch · kubeconfig mount (ro)"]
+        COLL["collector-svc :8002<br>kubectl · kubeconfig mount (ro)"]
+        PROC["processor-svc :8003<br>pure CPU"]
+        LLM["llm-svc :8004<br>4 LLM providers"]
+        REDIS[("Redis :6379 — job hashes + pub/sub<br>redis:7-alpine, AOF, allkeys-lru")]
+        DEMO["demo-app :8080 — fault target, NOT platform"]
+        DB[("demo-db — postgres:16-alpine, NOT platform")]
+    end
+
+    FE -->|"REST + SSE — http://localhost:8000"| GW
+    GW -->|"/api/jobs*"| ORCH
+    GW -->|"/api/reports*, /api/stats"| REPO
+    GW -->|"/api/scenarios*"| SCEN
+    ORCH -->|"POST /reports, /jobs"| REPO
+    ORCH -->|"POST /collect"| COLL
+    ORCH -->|"POST /process"| PROC
+    ORCH -->|"POST /analyse"| LLM
+    ORCH --- REDIS
+    DEMO --- DB
 ```
+
+### 3.5 Service Responsibility Matrix
+
+Each service owns a specific domain concern, a specific store (if any), and a specific set of external dependencies. The matrix below captures the complete runtime contract for every container in the platform.
+
+| Service | Port | Responsibility | State | External calls |
+|---------|------|----------------|-------|----------------|
+| gateway | 8000 | Public API; proxies to internal services; CORS `*`; sliding-window rate limit; SSE passthrough with anti-buffering headers | — | orchestrator, reports, scenario (proxy); llm + collector (`/health` aggregation) |
+| orchestrator | 8001 | Job lifecycle (7-state machine); coordinates collector→processor→llm→reports; publishes Redis events; archives terminal state | Redis | collector, processor, llm, reports |
+| collector | 8002 | Wraps kubectl subprocess; pod name auto-resolution via label selector | — | kube-apiserver (read) |
+| processor | 8003 | Noise/signal log filtering with context windows; secret/PII redaction (7 categories) | — | none (pure CPU) |
+| llm | 8004 | Provider integrations + prompt building + output validation; holds all external API keys | — | OpenAI / Anthropic / DeepSeek APIs |
+| reports | 8005 | Owns SQLite (single writer, WAL); reports + job snapshots; dashboard stats | SQLite | none |
+| scenario | 8006 | Lists/applies/resets fault scenarios via kubectl strategic-merge patch; tracks active scenario (409 on conflict) | in-memory | kube-apiserver (write) |
+| frontend | 3000 | Next.js 15 dashboard (App Router, Tailwind v4, shadcn/ui) | — | gateway only |
+
+### 3.6 Trust Boundaries and Security Model
+
+1. **Only gateway-svc is public.** Internal services bind to the Compose network / cluster DNS; nothing external routes to them. In Kubernetes, only gateway (NodePort 30080) and frontend (NodePort 30030) are exposed.
+2. **Secrets flow one way.** `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` exist only in llm-svc's environment. Evidence is redacted by processor-svc *before* llm-svc (and therefore any vendor) sees it.
+3. **Cluster access is split by least privilege.** collector-svc runs with a read-only ClusterRole (pods, pods/log, events — get/list/watch). scenario-svc runs with a Role scoped to the `demo` namespace (patch on deployments/services/configmaps; no delete). No other service has any cluster credentials.
+4. **Database ownership.** reports-svc is the single writer to the SQLite file; every other service goes through its HTTP API. Redis is owned by orchestrator-svc.
+5. **No authentication in v1.** The public API is open with permissive CORS — acceptable for a dissertation artefact on a private network, explicitly listed as a limitation.
+
+### 3.7 Key Design Decisions and Their Trade-offs
+
+| Decision | Rationale | Cost |
+|----------|-----------|------|
+| Asynchronous jobs (`202` + SSE) instead of synchronous analysis | LLM calls take 2–30 s; browsers and proxies time out; progress is UX-valuable | More moving parts: Redis, job state machine, SSE |
+| Redis as primary job store, SQLite as durable snapshot | Sub-ms hash reads for polling; pub/sub gives free SSE fanout; list pre-seeds v2 worker scaling | Two stores to keep consistent (archival is best-effort) |
+| Monorepo shared kernel (`k8s-llm-shared`) instead of per-service models | Zero schema drift; the contract is importable code | All services rebuild when shared changes |
+| kubectl-as-subprocess instead of the Python client | Battle-tested auth (kubeconfig contexts, exec plugins, OIDC), no client-library version skew | Requires the kubectl binary in collector/scenario images |
+| SQLite WAL instead of PostgreSQL | ~10 analyses/day at dissertation scale; zero-ops; single-writer is trivially safe | Does not scale horizontally (pinned 1 replica) |
+| REST instead of gRPC; Redis pub/sub instead of Kafka | Call frequency is ~10/day; latency is dominated by the LLM call | Revisit when throughput grows (migration plans written) |
+
+### 3.8 Full-Stack Component Map
+
+```mermaid
+flowchart TD
+    subgraph Services["7 Microservices (services/)"]
+        GW2["gateway-svc :8000<br>public entry, CORS, rate limit, SSE proxy"]
+        ORCH2["orchestrator-svc :8001<br>job state machine, pipeline coordinator"]
+        COLL2["collector-svc :8002<br>kubectl subprocess wrapper"]
+        PROC2["processor-svc :8003<br>noise filter + PII redactor"]
+        LLM2["llm-svc :8004<br>4 LLM providers, prompts, validation"]
+        REPO2["reports-svc :8005<br>SQLite single-writer, stats"]
+        SCEN2["scenario-svc :8006<br>kubectl patch, apply/reset faults"]
+    end
+
+    subgraph Shared["Shared Kernel"]
+        SHARED["k8s-llm-shared<br>enums, models, IDs, ProblemDetail, web helpers"]
+    end
+
+    subgraph Frontend["Frontend (frontend/)"]
+        FE2["Next.js 15 Dashboard<br>App Router, Tailwind, shadcn/ui"]
+        FE_pages["5 pages: dashboard, /analyse, /jobs,<br>/reports, /scenarios (apply/reset)"]
+        FE_data["Data layer: api.ts (REST), sse.ts (EventSource)<br>Types: openapi-typescript → api.d.ts"]
+    end
+
+    subgraph Eval["Evaluation Framework (evaluation/)"]
+        HARNESS["EvaluationHarness + CLI<br>run_all across 10 scenarios"]
+        METRICS["metrics.py<br>precision/recall/f1, aggregate"]
+        KW["KeywordClassifier<br>weighted 3-tier scoring"]
+        RB["RuleBasedClassifier<br>priority-ordered rules"]
+        GT["Ground Truth (10 JSON)<br>expected category, root cause, keywords"]
+        ADAPT["services.py<br>HTTP adapters → collector/processor/llm"]
+    end
+
+    subgraph Demo["Demo Workload (demo-app/)"]
+        DEMO_API["FastAPI<br>lifespan + 5 fault endpoints"]
+        DEMO_FAULTS["faults: crash, oom, slow, startup, db"]
+    end
+
+    subgraph K8s["Kubernetes (k8s/)"]
+        BASE["base/ — 4 manifests<br>namespace, configmap, deployment, service"]
+        SCENARIOS["scenarios/ — 10 fault.yaml<br>strategic merge patches"]
+        SERVICES_K8S["services/ — platform deployments<br>8 Deployments + RBAC + redis"]
+    end
+
+    subgraph Stores["State Stores"]
+        REDIS2[("Redis :6379<br>job hashes, pub/sub, queue")]
+        SQLITE2[("SQLite — /data/reports.db<br>incidents + analysis_jobs")]
+    end
+
+    subgraph CI["CI/CD (.github/)"]
+        CI_TEST["ci.yml — 9-suite matrix + frontend"]
+        CI_DOCKER["docker.yml — build + publish 8 images"]
+    end
+
+    GW2 --- ORCH2 --- COLL2 --- PROC2 --- LLM2
+    ORCH2 --- REPO2 --- SCEN2
+    ORCH2 --- REDIS2
+    REPO2 --- SQLITE2
+    GW2 --- FE2
+    SHARED -.-> GW2 & ORCH2 & COLL2 & PROC2 & LLM2 & REPO2 & SCEN2 & HARNESS
+    HARNESS --- ADAPT --- COLL2 --- PROC2 --- LLM2
+    HARNESS --- METRICS --- KW --- RB --- GT
+    SCENARIOS -.-> DEMO_API --- DEMO_FAULTS
+    BASE -.-> DEMO_API
+    SERVICES_K8S -.-> Services
+```
+
+### 3.9 Technology Stack
+
+The following matrix captures the complete runtime dependency surface of the platform. Every version is pinned; every choice has a rationale documented either in the table below or in the key design decisions table above.
+
+| Layer | Technology | Version | Role |
+|-------|-----------|---------|------|
+| Language (services) | Python | 3.12 (`>=3.12`) | All 8 service packages |
+| Web framework | FastAPI | 0.115.* | HTTP APIs in every service |
+| ASGI server | uvicorn[standard] | 0.32.* | `uvicorn app.main:app --host 0.0.0.0 --port <port>` |
+| Data validation | Pydantic | 2.10.* | All DTOs (via shared kernel) |
+| HTTP client | httpx | 0.28.* | Inter-service calls, DeepSeek provider, proxying |
+| Redis client | redis (asyncio) | >=5.2,<7 | Orchestrator job store |
+| LLM SDKs | openai / anthropic | 1.59.* / 0.45.* | Structured-output providers |
+| Database | SQLite (stdlib `sqlite3`) | 3.40+, WAL | Reports + job snapshots |
+| Cache/queue/pub-sub | Redis | 7-alpine | Job state, SSE fanout |
+| Cluster CLI | kubectl | v1.31.0 | collector + scenario images |
+| IDs | uuid-utils | >=0.10 | UUIDv7 (time-sortable) |
+| Logging | structlog | 24.* | Structured service logs |
+| Frontend framework | Next.js | 15.3.4 | App Router, `output: "standalone"` |
+| UI runtime | React | 19.1.0 | Server + client components |
+| Styling | Tailwind CSS | 4.1.10 | Dark-only design system |
+| Component kit | shadcn/ui (Radix) | new-york style | 14 primitives in `components/ui` |
+| Charts | recharts | 2.15.3 | Dashboard category/latency charts |
+| Type generation | openapi-typescript | 7.8.0 | `gateway.yaml` → `api.d.ts` |
+| Frontend language | TypeScript | 5.8.3 (strict) | Entire frontend |
+| Test runner (Python) | pytest + pytest-asyncio | 8.* / 0.24.* | `asyncio_mode = auto` everywhere |
+| Test doubles | fakeredis | >=2.26 | In-memory Redis for tests |
+| Test runner (TS) | Vitest + Testing Library | ^4.1.10 | jsdom component tests |
+| Linter/formatter | ruff | 0.8.* | `select = E,F,I,N,W`, line-length 100 |
+| Containers | Docker + Compose v2 | — | 11-container reference stack |
+| CI | GitHub Actions | — | 9-suite pytest matrix + frontend build + Docker publish |
+| Registry | GHCR | ghcr.io | 8 published images |
+
+### 3.10 Network Traffic Flow
+
+The following diagram captures every network hop in the system, colour-coded by trust domain. External traffic (browser, PagerDuty, Prometheus alerts) terminates at the ingress/load balancer with TLS. Internal traffic between analyser services flows over HTTP within the Docker network or Kubernetes ClusterIP. Outbound traffic to LLM providers is HTTPS with bearer token authentication.
+
+```mermaid
+graph TB
+    subgraph EXT["External Traffic"]
+        browser["Browser"]
+        pd["PagerDuty"]
+        alert["Prometheus alert"]
+    end
+
+    subgraph LB["Ingress / Load Balancer"]
+        tls["TLS termination"]
+    end
+
+    subgraph ANALYSER_flow["analyser namespace"]
+        f["frontend :3000"]
+        gw["gateway :8000"]
+        o["orchestrator :8001"]
+        co["collector :8002"]
+        pr["processor :8003"]
+        l["llm :8004"]
+        re["reports :8005"]
+        sc["scenario :8006"]
+        r[("redis :6379")]
+    end
+
+    subgraph K8S_API_flow["kube-apiserver"]
+        api["API server"]
+    end
+
+    subgraph LLM_APIS["LLM Providers"]
+        openai["api.openai.com"]
+        anthropic["api.anthropic.com"]
+    end
+
+    browser -->|"HTTPS"| tls
+    pd -->|"HTTPS"| tls
+    alert -->|"HTTPS"| tls
+
+    tls -->|"HTTP"| f
+    tls -->|"HTTP"| gw
+
+    f -->|"HTTP"| gw
+    gw -->|"HTTP"| o
+    gw -->|"HTTP"| re
+    gw -->|"HTTP"| sc
+
+    o -->|"HTTP"| co
+    o -->|"HTTP"| pr
+    o -->|"HTTP"| l
+    o -->|"HTTP"| re
+    o <-->|"TCP"| r
+
+    re --> postgres[("PostgreSQL :5432")]
+
+    co -->|"kubectl → READ pods/logs/events"| api
+    sc -->|"kubectl → PATCH demo deployments"| api
+
+    l -->|"HTTPS"| openai
+    l -->|"HTTPS"| anthropic
+```
+
+### 3.11 RBAC Boundary
+
+The following diagram illustrates the explicit RBAC separation between the two services that require Kubernetes API access. The collector-svc uses a read-only ClusterRole scoped to pods, pods/log, and events across all namespaces. The scenario-svc uses a write-capable Role scoped exclusively to the `demo` namespace. No other service has any Kubernetes API credentials.
+
+```mermaid
+graph LR
+    subgraph ANALYSER_rbac["analyser namespace"]
+        collector_rbac["collector-sa"]
+        scenario_rbac["scenario-sa"]
+    end
+
+    subgraph TARGET["target namespaces"]
+        prod["prod"]
+        staging["staging"]
+        demo["demo"]
+    end
+
+    collector_rbac -->|"ClusterRole<br>✓ pods, pods/log, events<br>✓ get, list, watch<br>✗ write ✗ delete"| prod
+    collector_rbac -->|"same ClusterRole"| staging
+    scenario_rbac -->|"Role (demo ns only)<br>✓ deployments<br>✓ configmaps<br>✓ patch, update"| demo
+```
+
+### 3.12 Service Descriptions
 
 **Gateway Service (port 8000).** The single entry point for all external traffic. Routes requests to backend services via an httpx-based reverse proxy, applies per-IP rate limiting (60 requests per minute default), returns RFC 7807 Problem Details for errors, and proxies SSE streams transparently.
 
@@ -167,7 +463,7 @@ SQLite ←──▶ Reports (:8005)
 
 **Redis (port 6379).** An in-memory data structure store serving three roles: job state hashes (with 24-hour TTL), job work queue lists (for v2 worker pool consumption), and publish-subscribe channels for SSE event distribution to multiple concurrent browser clients.
 
-### 3.3 The Shared Contract Package
+### 3.13 The Shared Contract Package
 
 All Python services depend on a shared package, `k8s-llm-shared` (version 1.0.0), installed as a local editable dependency from `services/shared/`. This package provides:
 
@@ -203,7 +499,203 @@ class IncidentReport(BaseModel):
 
 Each `EvidenceItem` carries a source (logs, describe, events, or container_status), an ISO 8601 timestamp, the content string (up to 2,000 characters), and a relevance flag set by the LLM to indicate whether the item contributed to the diagnosis. The `remediation` field is designed to contain copyable `kubectl` commands — a deliberate design choice to minimise the mean time to resolution by eliminating the translation step from diagnosis to action.
 
-### 4.2 Database Schema
+The `model_config = {"extra": "ignore"}` directive on `IncidentReport` ensures forward compatibility: if an LLM adds fields not present in the schema (a common hallucination pattern), they are silently dropped rather than causing a validation failure. This prevents the brittle failure mode where a perfectly useful diagnosis is rejected because the model appended a non-standard field like `"priority"` or `"next_steps"`.
+
+### 4.2 Domain Model Class Diagram
+
+The following Mermaid class diagram captures the complete domain model hierarchy: five enumerations, six core data models, and three SSE event payloads. Arrows show composition (EvidenceItem is embedded in IncidentReport), derivation (EvidencePackage is derived from RawEvidence), and usage relationships.
+
+```mermaid
+classDiagram
+    direction TB
+
+    class FailureCategory {
+        crash
+        config
+        dependency
+        network
+        image
+        resource
+        probe
+        unknown
+    }
+
+    class Severity {
+        low
+        medium
+        high
+        critical
+    }
+
+    class JobStatus {
+        queued
+        collecting
+        processing
+        llm_call
+        persisting
+        done
+        failed
+    }
+
+    class EvidenceSource {
+        pod_log
+        previous_pod_log
+        kubernetes_event
+        pod_status
+    }
+
+    class EvidenceItem {
+        +source : EvidenceSource
+        +pod : str
+        +timestamp : str
+        +evidence : str
+    }
+
+    class IncidentReport {
+        +incident_id : str
+        +incident_summary : str
+        +likely_root_cause : str
+        +affected_component : str
+        +failure_category : FailureCategory
+        +severity : Severity
+        +confidence : float
+        +supporting_evidence : list
+        +suggested_fix : str
+        +recommended_commands : list
+        +human_verification_steps : list
+        +created_at : str
+    }
+
+    class ReportSummary {
+        +incident_id : str
+        +namespace : str
+        +pod_name : str
+        +failure_category : FailureCategory
+        +severity : Severity
+        +confidence : float
+        +incident_summary : str
+        +created_at : str
+    }
+
+    class RawEvidence {
+        +namespace : str
+        +pod_name : str
+        +current_logs : str
+        +previous_logs : str
+        +pod_status : str
+        +k8s_events : str
+        +restart_count : int
+        +container_states : list
+    }
+
+    class EvidencePackage {
+        +namespace : str
+        +pod_name : str
+        +current_logs : str
+        +previous_logs : str
+        +pod_status_summary : str
+        +k8s_events_filtered : str
+        +restart_count : int
+    }
+
+    class AnalysisRequest {
+        +namespace : str
+        +pod_name : str
+    }
+
+    class JobState {
+        +job_id : str
+        +namespace : str
+        +pod_name : str
+        +status : JobStatus
+        +stage : str
+        +incident_id : str
+        +latency_ms : int
+        +error : str
+        +created_at : str
+        +updated_at : str
+    }
+
+    class SseStageEvent {
+        +event : str
+        +job_id : str
+        +status : JobStatus
+        +stage : str
+        +updated_at : str
+    }
+
+    class SseDoneEvent {
+        +event : str
+        +job_id : str
+        +status : str
+        +incident_id : str
+        +failure_category : FailureCategory
+        +severity : Severity
+        +latency_ms : int
+    }
+
+    class SseFailedEvent {
+        +event : str
+        +job_id : str
+        +status : str
+        +error : str
+        +latency_ms : int
+    }
+
+    class EvaluationResult {
+        +scenario_id : str
+        +root_cause_correct : bool
+        +category_correct : bool
+        +schema_valid : bool
+        +latency_s : float
+        +confidence : float
+        +evidence_count : int
+        +remediation_keywords_hit : int
+    }
+
+    IncidentReport "1" --> "*" EvidenceItem : supporting_evidence
+    IncidentReport --> FailureCategory : uses
+    IncidentReport --> Severity : uses
+    ReportSummary --> FailureCategory : uses
+    ReportSummary --> Severity : uses
+    EvidencePackage ..> RawEvidence : derived from
+    EvidenceItem --> EvidenceSource : source
+    JobState --> JobStatus : status
+    SseStageEvent --> JobStatus : status
+    EvaluationResult ..> IncidentReport : evaluates
+
+    note for FailureCategory "enum · 8 values"
+    note for Severity "enum · 4 values"
+    note for JobStatus "enum · 7 values"
+    note for EvidenceSource "enum · 4 values"
+```
+
+### 4.3 The Five Enumerations (Exact Parity Contract)
+
+The following table captures the five domain enumerations that must be in exact parity across SQL CHECK constraints, OpenAPI enum declarations, Pydantic `typing.Literal` types, and generated TypeScript union types. Adding or removing any value requires a major version bump and coordinated pull requests across all downstream services.
+
+| Enum | Values | Appears in |
+|------|--------|-----------|
+| `FailureCategory` (8) | `crash`, `config`, `dependency`, `network`, `image`, `resource`, `probe`, `unknown` | SQL CHECK, OpenAPI, Pydantic, TS union |
+| `Severity` (4) | `low`, `medium`, `high`, `critical` | SQL CHECK, OpenAPI, Pydantic, TS union |
+| `JobStatus` (7) | `queued`, `collecting`, `processing`, `llm_call`, `persisting`, `done`, `failed` | SQL CHECK, Redis hash, OpenAPI, SSE, Pydantic, TS union |
+| `EvidenceSource` (4) | `pod_log`, `previous_pod_log`, `kubernetes_event`, `pod_status` | OpenAPI, Pydantic, TS union |
+| `ProviderId` (4) | `mock`, `openai`, `anthropic`, `deepseek` | OpenAPI (llm.yaml), Pydantic |
+
+Parity is *tested*, not trusted: the shared package test suite (`TestSchemaSqlParity`) asserts every enum literal appears quoted inside the database schema SQL file.
+
+### 4.4 EvidenceItem Source Taxonomy
+
+Each evidence item carries a `source` field whose value determines how the frontend renders it (colour-coded badges, source-specific icons) and how the LLM weighs it (pod_status and kubernetes_event evidence carries higher diagnostic reliability than pod_log evidence, which may be truncated or overwritten by container restarts).
+
+| Source | When emitted | Example |
+|--------|-------------|---------|
+| `pod_log` | Current container logs | `RuntimeError: Missing required configuration: DATABASE_URL` |
+| `previous_pod_log` | Logs from before the last restart | `Traceback (most recent call last): File "app/main.py", line 42` |
+| `kubernetes_event` | `kubectl get events` output | `Warning: BackOff started container demo-app` |
+| `pod_status` | `kubectl describe pod` section | `Last State: Terminated, Reason: OOMKilled, Exit Code: 137` |
+
+### 4.5 Database Schema
 
 The SQLite schema, defined in `contracts/database/schema.sql`, implements two tables with CHECK constraints that mirror the service-level enumerations:
 
@@ -213,7 +705,7 @@ The SQLite schema, defined in `contracts/database/schema.sql`, implements two ta
 
 Five composite indexes optimise common query patterns: namespace+pod_name lookups, category-based filtering, temporal ordering, status filtering, and job creation ordering. Two triggers (`trg_incidents_updated` and `trg_jobs_updated`) automatically maintain the `updated_at` column.
 
-### 4.3 Redis Schema
+### 4.6 Redis Schema
 
 The Redis schema serves as the hot data layer for in-flight jobs, defined in `contracts/database/redis_schema.md`:
 
@@ -223,7 +715,79 @@ The Redis schema serves as the hot data layer for in-flight jobs, defined in `co
 
 **SSE Pub/Sub** (`job:{job_id}:events`): A Redis publish-subscribe channel. The orchestrator PUBLISHes JSON-serialised `SseStageEvent`, `SseDoneEvent`, or `SseFailedEvent` objects on each state transition. Multiple subscribers (browser SSE connections) can concurrently receive events on the same channel, enabling the dashboard to display real-time pipeline progress to multiple users simultaneously.
 
-### 4.4 Event Contracts
+**Redis Job Lifecycle.** The following state diagram captures the full lifecycle of a job in Redis, from creation through terminal states. Each state transition triggers a Redis HSET (updating the job hash) and a Redis PUBLISH (sending an SSE event to all subscribers on the channel).
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued: POST /api/jobs
+    queued --> collecting: Pipeline.run() starts
+    collecting --> processing: RawEvidence received
+    processing --> llm_call: EvidencePackage received
+    llm_call --> persisting: IncidentReport validated
+    persisting --> done: Report saved to SQLite
+    queued --> failed: Archival failure (non-fatal)
+    collecting --> failed: kubectl timeout / pod not found
+    processing --> failed: Filter/redact exception
+    llm_call --> failed: LLM API error / validation failure
+    persisting --> failed: Database write failure
+
+    note right of done
+        Redis HSET status=done
+        incident_id set
+        latency_ms recorded
+        PUBLISH done event
+        Archived to analysis_jobs
+    end note
+
+    note right of failed
+        Redis HSET status=failed
+        error message (truncated to 500 chars)
+        latency_ms recorded
+        PUBLISH failed event
+    end note
+```
+
+**Multi-Client SSE Fanout.** Redis pub/sub provides multi-client fanout with no additional complexity in the orchestrator. When multiple engineers monitor the same analysis job, each browser's SSE connection independently subscribes to the same Redis channel. The orchestrator publishes once; Redis distributes to all subscribers.
+
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator
+    participant R as Redis Pub/Sub
+    participant G1 as Gateway (client A)
+    participant G2 as Gateway (client B)
+    participant G3 as Gateway (client C)
+    participant A as Browser A
+    participant B as Browser B
+    participant C as Browser C
+
+    A->>G1: GET /api/jobs/{id}/stream
+    G1->>R: SUBSCRIBE job:{id}:events
+    B->>G2: GET /api/jobs/{id}/stream
+    G2->>R: SUBSCRIBE job:{id}:events
+    C->>G3: GET /api/jobs/{id}/stream
+    G3->>R: SUBSCRIBE job:{id}:events
+
+    O->>R: PUBLISH job:{id}:events {event: "stage", status: "processing"}
+
+    R-->>G1: event: stage {status: "processing"}
+    G1-->>A: data: {"event":"stage","status":"processing"...}
+    R-->>G2: event: stage {status: "processing"}
+    G2-->>B: data: {"event":"stage","status":"processing"...}
+    R-->>G3: event: stage {status: "processing"}
+    G3-->>C: data: {"event":"stage","status":"processing"...}
+
+    Note over O: No fanout logic — Redis handles distribution
+
+    O->>R: PUBLISH job:{id}:events {event: "done", incident_id: "..."}
+    R-->>G1: event: done
+    G1-->>A: SSE stream closes
+    R-->>G2: event: done
+    G2-->>B: SSE stream closes
+    R-->>G3: event: done
+    G3-->>C: SSE stream closes
+```
+
+### 4.7 Event Contracts
 
 Stage transition events use a polymorphic SSE model:
 
@@ -293,9 +857,43 @@ The LLM service is the analytical core of the system. It manages provider integr
 
 **DeepSeek Provider.** Implements a raw httpx-based client since DeepSeek's OpenAI-compatible endpoint supports the legacy `json_object` mode but not the newer structured output API. The response is parsed from JSON and validated through Pydantic's `model_validate`. This provider is cost-optimised for high-volume use.
 
-**Mock Provider.** Implements a 10-rule deterministic heuristic for zero-cost testing and CI pipelines. The rules form an if/elif chain that checks evidence content for specific patterns: `DATABASE_URL` keyword → config failure, `connection refused` → dependency failure, `oomkilled` → resource failure, `imagepull` → image failure, probe-related keywords → probe failure, `ContainerCannotRun` → crash failure, `killed` → resource failure, `RuntimeError` → crash failure, `CrashLoopBackOff` with no other match → crash failure, and a catch-all → unknown failure. Each rule produces a complete `IncidentReport` with synthetic but plausible evidence items, remediation steps, and confidence scores.
+**Mock Provider.** Implements a 10-rule deterministic heuristic for zero-cost testing and CI pipelines. The rules form an if/elif chain that checks evidence content for specific patterns: `DATABASE_URL` keyword → config failure, `connection refused` → dependency failure, `oomkilled` → resource failure, `imagepull` → image failure, probe-related keywords → probe failure, `ContainerCannotRun` → crash failure, `killed` → resource failure, `RuntimeError` → crash failure, `CrashLoopBackOff` with no other match → crash failure, and a catch-all → unknown failure. Each rule produces a complete `IncidentReport` with synthetic but plausible evidence items, remediation steps, and confidence scores. The mock always assigns `confidence = 0.5` and `severity = "medium"` regardless of the actual severity, which makes it unsuitable for production but perfectly adequate for deterministic testing — it correctly identifies failure categories for all ten built-in scenarios at zero cost and sub-millisecond latency.
 
-**Prompt Construction.** The `prompts.py` module builds a two-part prompt. The system prompt establishes five rules: (1) provide only the requested JSON output, (2) use the exact enum values, (3) cite specific evidence for each finding, (4) include executable kubectl commands in remediation, and (5) be precise rather than verbose. The user prompt presents six evidence sections (pod logs, describe output, events, container status, restart count, additional context) with explicit "no evidence available" fallbacks for each section. The full `IncidentReport` JSON Schema is injected into the prompt so the LLM knows the expected output structure.
+**Provider Comparison Matrix.** The following table captures the key differentiating characteristics of the four supported LLM providers, including their structured-output mechanisms, error handling strategies, and default model selections.
+
+| Provider | SDK | Structured-Output Strategy | Default Model | Notable Error Handling |
+|----------|-----|---------------------------|---------------|----------------------|
+| Mock | None — pure Python heuristic | Constructs `IncidentReport` directly | N/A | Deterministic; used in all tests and default deployments; confidence always 0.5 |
+| OpenAI | `openai.AsyncOpenAI` | `chat.completions.parse(response_format=IncidentReport)` — server-side structured outputs via constrained decoding | `gpt-4o-mini` | `LengthFinishReasonError` → "increase LLM_MAX_TOKENS"; `ContentFilterFinishReasonError` → "response blocked by safety system"; refusal/`parsed=None` → ValueError with raw text logged |
+| Anthropic | `anthropic.AsyncAnthropic` | `messages.parse(output_format=IncidentReport)` — native structured output parsing | `claude-haiku-4-5-20251001` | Missing parsed output → ValueError with raw text logged; content filter triggers mapped to clear error messages |
+| DeepSeek | Raw `httpx` POST to `api.deepseek.com` (OpenAI-compatible) | `response_format={"type":"json_object"}` + JSON Schema & example appended to system prompt | `deepseek-chat` | Non-JSON/truncated response → RuntimeError; then `IncidentReport.model_validate` as final safety net |
+
+Providers are imported eagerly at module load time (a missing SDK surfaces at boot, not mid-request) but instantiated per call — meaning only the selected provider requires its API key to be present. Unknown `LLM_PROVIDER` values fall back to the mock provider with a logged warning, ensuring the system is always functional even if configuration is missing.
+
+**Prompt Construction.** The `prompts.py` module builds a two-part prompt with strict structural constraints. The system prompt establishes five anti-hallucination rules that constrain the LLM to evidence-based, actionable, and precise responses:
+
+1. **Only use evidence that is present in the provided data.** This prevents the LLM from inventing log lines, events, or configuration details that would make a diagnosis more plausible but lack factual basis in the collected evidence.
+2. **Do not invent log lines or events that were not given.** This is a stronger restatement of rule 1 — specifically targeting the hallucination pattern of fabricating Kubernetes events (e.g., "Warning: BackOff" for a pod that was never in that state).
+3. **Set confidence lower if evidence is ambiguous or incomplete.** This calibrates the LLM's self-assessment against the actual evidence quality, producing confidence scores that, while not statistically calibrated, provide a useful ordinal signal differentiating clear-cut failures from ambiguous ones.
+4. **Never recommend automated remediation — suggest human-verifiable steps only.** This is a safety constraint ensuring that the system remains an advisory tool rather than an autonomous repair system. The distinction is critical: the system suggests commands that a human operator reviews and executes.
+5. **Respond ONLY with a valid JSON object matching the schema below.** This is the structural constraint that makes prompt engineering viable for machine-consumable output. Without this rule, LLMs frequently prepend explanatory text ("Here is my analysis:") that breaks JSON parsing.
+
+The user prompt presents six evidence sections (pod status, current logs, previous logs, Kubernetes events, restart count, and additional context) with explicit "no evidence available" fallbacks for each section. The full `IncidentReport` JSON Schema is injected into the prompt so the LLM knows the expected output structure. The total input token budget typically ranges from 800 to 2,500 tokens depending on evidence volume, well within the 8K–128K context windows of modern models.
+
+**Token Budget Breakdown (Representative Analysis).**
+
+| Section | Approximate Tokens | Notes |
+|---------|-------------------|-------|
+| System prompt | ~150 | Static across all calls |
+| User header + section labels | ~50 | Static template |
+| Pod status summary | Up to ~500 | Dominates variability; truncated to 2,000 chars |
+| Current logs (filtered) | Up to ~1,000 | 100-line cap at ~10 words/line |
+| Previous logs (filtered) | Up to ~1,000 | Same cap; often empty for OOM scenarios |
+| Kubernetes events (filtered) | Up to ~100 | Warning-level events only |
+| Restart count | ~5 | Single integer |
+| JSON Schema injection | ~800 | Static across all calls |
+| **Total input** | **~800–3,600** | Varies with evidence volume |
+| **Output budget** | 2,000 | Controlled by `LLM_MAX_TOKENS` |
 
 **Validation.** The `ReportValidator` class wraps Pydantic's validation pipeline. It provides `validate_dict` (for parsed JSON), `validate_string` (for raw text parsing), and `is_valid` (boolean check without raising). The `get_schema_json` method exposes the schema for prompt injection and API documentation.
 
@@ -322,6 +920,70 @@ The scenario service is a fault injection framework that enables controlled expe
 ---
 
 ## 6. Analysis Pipeline and State Machine
+
+### 6.0 End-to-End Lifecycle Sequence Diagram
+
+The following sequence diagram captures the complete analysis lifecycle from user request to terminal state. It shows the formal handoffs between services, the state transitions stored in Redis, SSE events published to the frontend via the gateway, and best-effort archival to SQLite. The diagram makes explicit what the prose descriptions imply: the orchestrator is purely a coordinator — it delegates every unit of work to a dedicated service.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant User as User/Dashboard
+    participant GW as Gateway (:8000)
+    participant Orch as Orchestrator (:8001)
+    participant Redis as Redis (:6379)
+    participant Coll as Collector (:8002)
+    participant Proc as Processor (:8003)
+    participant LLM as LLM Service (:8004)
+    participant Rep as Reports (:8005)
+    participant SQLite as SQLite
+
+    User->>GW: POST /api/jobs {namespace, pod_name}
+    GW->>Orch: Proxy: POST /jobs
+
+    Orch->>Redis: HSET job:{id} status=queued (TTL 24h)
+    Orch->>Redis: LPUSH job:queue {job_id}
+    Orch->>Rep: POST /jobs (best-effort archive)
+    Rep->>SQLite: INSERT analysis_jobs (status=queued)
+    Orch-->>GW: 202 {job_id, status: queued}
+    GW-->>User: 202 Accepted
+
+    User->>GW: GET /api/jobs/{id}/stream
+    GW->>Orch: SSE proxy (replay current state + subscribe)
+
+    Note over Orch: Pipeline starts (asyncio background task)
+
+    Orch->>Redis: HSET status=collecting
+    Orch->>Redis: PUBLISH job:{id}:events "stage: collecting"
+    Orch->>Coll: POST /collect (60s timeout)
+    Coll->>Coll: kubectl logs, describe, events (x9 calls)
+    Coll-->>Orch: RawEvidence
+
+    Orch->>Redis: HSET status=processing
+    Orch->>Redis: PUBLISH job:{id}:events "stage: processing"
+    Orch->>Proc: POST /process (30s timeout)
+    Proc->>Proc: Filter noise + redact secrets
+    Proc-->>Orch: EvidencePackage
+
+    Orch->>Redis: HSET status=llm_call
+    Orch->>Redis: PUBLISH job:{id}:events "stage: llm_call"
+    Orch->>LLM: POST /analyse (60s timeout)
+    LLM->>LLM: Build prompt + call provider
+    LLM-->>Orch: IncidentReport (validated)
+
+    Orch->>Redis: HSET status=persisting
+    Orch->>Redis: PUBLISH job:{id}:events "stage: persisting"
+    Orch->>Rep: POST /reports (30s timeout)
+    Rep->>SQLite: INSERT incidents + UPDATE analysis_jobs
+    Rep-->>Orch: 201 {incident_id}
+
+    Orch->>Redis: HSET status=done + incident_id + latency_ms
+    Orch->>Redis: PUBLISH job:{id}:events "event: done"
+    Orch->>Rep: POST /jobs (final archive with done status)
+
+    Redis-->>GW: SSE event forwarding
+    GW-->>User: event: done {incident_id, category, severity, confidence}
+```
 
 ### 6.1 Pipeline Stages
 
@@ -460,7 +1122,82 @@ The evaluation results reveal several important characteristics of LLM-based inc
 
 ## 9. Fault Scenario System
 
-### 9.1 Design
+### 9.1 Fault Injection Sequence
+
+The following sequence diagram captures the complete fault injection lifecycle: applying a scenario via kubectl strategic merge patch, verifying the fault has taken effect, analysing the broken pod through the pipeline, and resetting to a healthy baseline. The mutual exclusion lock (409 Conflict) prevents concurrent fault applications.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant User as Operator
+    participant GW as Gateway
+    participant Scen as Scenario Service (:8006)
+    participant K8s as kube-apiserver
+    participant Pod as demo-app Pod
+    participant Orch as Orchestrator
+    participant Pipeline as Pipeline (collect→process→llm→reports)
+
+    User->>GW: POST /api/scenarios/05-oom/apply
+    GW->>Scen: Proxy apply request
+    Scen->>Scen: Check active lock (409 if conflict)
+    Scen->>K8s: kubectl patch deployment/demo-app -n demo --type strategic -p '{...}'
+    K8s-->>Scen: deployment patched
+    Note over K8s: Memory limit: 128Mi → 32Mi
+    K8s->>Pod: Rolling update triggers
+    Pod->>Pod: Pod restarts with new resource limits
+
+    Scen-->>GW: 200 {scenario_id, status: "applied"}
+    GW-->>User: Scenario applied
+
+    User->>GW: POST /api/jobs {namespace: demo, pod_name: demo-app}
+    GW->>Orch: Proxy: POST /jobs
+    Orch->>Pipeline: Execute pipeline (background task)
+    Pipeline->>K8s: kubectl logs, describe, events
+    Pipeline->>Pipeline: Process → LLM → Persist
+    Pipeline-->>Orch: done: IncidentReport {category: resource, root_cause: OOMKilled}
+    Orch-->>GW: SSE: done event
+    GW-->>User: Report: "OOMKilled · memory limit 32Mi"
+
+    User->>GW: POST /api/scenarios/reset
+    GW->>Scen: Proxy reset request
+    Scen->>K8s: kubectl delete deployment/demo-app
+    Scen->>K8s: kubectl apply -f k8s/base/
+    Scen->>K8s: kubectl rollout status deployment/demo-app (120s timeout)
+    Scen-->>GW: 200 {status: "reset"}
+    GW-->>User: Cluster restored to healthy baseline
+```
+
+### 9.2 Evaluation Harness Flow
+
+The evaluation harness measures diagnostic accuracy by replaying each scenario through the pipeline and comparing the LLM's output against ground truth. The following diagram shows the evaluation flow for a single scenario:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant H as EvaluationHarness
+    participant C as Collector
+    participant P as Preprocessor
+    participant R as Redactor
+    participant Cl as Classifier (llm/keyword/rulebased)
+    participant M as metrics.evaluate
+    participant GT as ground_truth/{id}.json
+
+    H->>C: collect(namespace, pod_name)
+    C-->>H: RawEvidence
+    H->>P: process(raw_evidence)
+    P-->>H: EvidencePackage
+    H->>R: redact(evidence_package)
+    R-->>H: EvidencePackage (redacted)
+    H->>Cl: classify(evidence_package)
+    Cl-->>H: IncidentReport
+    H->>M: evaluate(report, scenario_id, latency)
+    M->>GT: Read ground truth
+    GT-->>M: true_root_cause, true_failure_category, correct_remediation_keywords
+    M->>M: Compare report vs ground truth
+    M-->>H: EvaluationResult {category_correct, root_cause_correct, remediation_keywords_hit, ...}
+```
+
+### 9.3 Design
 
 The fault scenario system enables reproducible evaluation and training by injecting controlled failures into a designated test namespace. Ten scenarios are defined, each with:
 
@@ -468,7 +1205,7 @@ The fault scenario system enables reproducible evaluation and training by inject
 2. A `ground_truth.json` file in `evaluation/ground_truth/` containing the expected diagnostic output.
 3. A corresponding healthy base manifest in `k8s/base/` for reset operations.
 
-### 9.2 Scenario Catalogue
+### 9.4 Scenario Catalogue
 
 The ten scenarios exercise seven failure categories:
 
@@ -487,7 +1224,7 @@ The ten scenarios exercise seven failure categories:
 
 Each fault is applied using `kubectl patch` with a strategic merge patch, which modifies only the specified fields without requiring a full replacement of the deployment specification. This approach minimises the risk of unintended side effects from scenario application.
 
-### 9.3 Evaluation Scores
+### 9.5 Evaluation Scores
 
 When used as an evaluation harness, these scenarios produce a per-category and aggregate accuracy score. The scores serve two purposes: (1) validating that the LLM correctly diagnoses known failure types before the system is trusted in production, and (2) providing a team health metric — as the platform evolves, periodic re-evaluation ensures that the diagnostic capability does not regress.
 
@@ -648,7 +1385,7 @@ The deterministic baselines (keyword and rule-based) produce only a category lab
 
 ## 13. Production Deployment
 
-### 12.1 Deployment Models
+### 13.1 Deployment Models
 
 The system supports three deployment models of increasing complexity and resilience:
 
@@ -660,39 +1397,247 @@ The system supports three deployment models of increasing complexity and resilie
 
 ### 13.2 Platform-Specific Architectures
 
-**AWS Elastic Kubernetes Service (EKS).** The EKS deployment leverages AWS managed services to minimise operational overhead. Route53 provides DNS resolution, directing traffic for the dashboard and API domains to an Application Load Balancer (ALB). ACM provisions TLS certificates that are automatically attached to the ALB's HTTPS listener. The ALB is configured with OIDC authentication, requiring Cognito or Okta-based identity verification before granting access to the dashboard. The AWS Load Balancer Controller (an Ingress controller) translates Kubernetes Ingress resources into ALB configuration, enabling path-based routing (`/` → frontend, `/api` → gateway) and automatic target group management.
+**AWS Elastic Kubernetes Service (EKS).** The EKS deployment leverages AWS managed services to minimise operational overhead. The following diagram shows the complete EKS production architecture, including ingress path (Route53 → WAF → ALB), in-cluster components, and managed services (RDS, ElastiCache, Secrets Manager, ECR, X-Ray).
 
-Within the cluster, the analyser namespace hosts all service pods. The processor deployment includes a Horizontal Pod Autoscaler targeting 70% CPU utilisation. The collector and scenario pods use dedicated ServiceAccounts with IAM Roles for Service Accounts (IRSA), eliminating the need for static credentials. The reports service connects to an RDS PostgreSQL instance using IAM authentication rather than a password — the pod's IRSA role is authorised to generate short-lived database credentials.
+```mermaid
+graph TB
+    subgraph INTERNET["Internet"]
+        user["User Browser"]
+        pd["PagerDuty"]
+    end
 
-External services include RDS PostgreSQL (Multi-AZ deployment with automated 14-day backup retention), ElastiCache Redis (encrypted in transit and at rest), Secrets Manager (storing LLM API keys with automatic rotation for AWS-native keys), and ECR (with immutable image tags and a lifecycle policy retaining only the 20 most recent images).
+    subgraph AWS["AWS Account"]
+        route53["Route53<br>incidents.company.com"]
+        acm["ACM<br>TLS cert"]
+        waf["WAF"]
+        alb["Application Load Balancer<br>L7 routing + OIDC auth"]
 
-Observability uses CloudWatch Container Insights for cluster-level metrics, Amazon Managed Service for Prometheus (AMP) for application metrics, CloudWatch Logs for structured log aggregation via Fluent Bit, and AWS X-Ray for distributed tracing via the AWS Distro for OpenTelemetry (ADOT) collector.
+        route53 --> alb
+        acm --> alb
+        waf --> alb
 
-**Azure Kubernetes Service (AKS).** The AKS deployment mirrors the EKS architecture using Azure-native services. Azure DNS resolves the public domains. Front Door with WAF provides DDoS protection and global routing. Application Gateway v2 with the Application Gateway Ingress Controller (AGIC) handles TLS termination using certificates stored in Key Vault. AGIC translates Kubernetes Ingress resources into Application Gateway routing rules, with automatic backend pool updates as pods scale.
+        subgraph EKS_diag["EKS Cluster"]
+            direction TB
 
-The cluster uses Azure CNI with Calico network policies for pod-level network segmentation. Workload Identity federates Kubernetes ServiceAccounts with Azure Managed Identities, enabling pods to authenticate to Azure services without secrets. The Secrets Store CSI Driver mounts Key Vault secrets as volumes in the LLM pod, keeping API keys out of environment variables and Kubernetes Secrets entirely.
+            subgraph INGRESS_eks["AWS Load Balancer Controller"]
+                ing["Ingress rules"]
+            end
 
-Managed services include Azure Database for PostgreSQL Flexible Server (zone-redundant high availability with 14-day automated backups), Azure Cache for Redis Enterprise (active-active clustering for multi-region resilience), Key Vault (with RBAC-based access control and soft-delete protection), and Azure Container Registry (with geo-replication to secondary regions and integrated vulnerability scanning).
+            subgraph ANALYSER_eks["analyser namespace"]
+                f["frontend :3000"]
+                gw["gateway :8000"]
+                o["orchestrator :8001"]
+                co["collector :8002"]
+                pr["processor :8003"]
+                l["llm :8004"]
+                re["reports :8005"]
+                sc["scenario :8006"]
+                r[("redis")]
+            end
 
-Observability uses Container Insights for metrics and logs, Managed Prometheus for application-level metrics scraping, Managed Grafana for dashboarding, and Application Insights for distributed tracing. Azure Alerts integrate with Teams, PagerDuty, and webhook endpoints for notification routing.
+            subgraph MON["monitoring namespace"]
+                prom["CloudWatch + AMP"]
+                graf["Managed Grafana"]
+            end
 
-**Self-Managed Kubernetes.** For organisations running their own Kubernetes clusters on bare metal, VPS providers, or private cloud, the self-managed deployment model uses exclusively open-source, in-cluster solutions.
+            alb --> ing
+            ing --> f
+            ing --> gw
+            gw --> o
+            o --> co
+            o --> pr
+            o --> l
+            o --> re
+            o <--> r
+        end
 
-The cluster itself is provisioned with k3s (for lightweight, single-binary operation), kubeadm (for upstream-vanilla Kubernetes), or RKE2 (for FIPS 140-2 compliance). Cilium provides eBPF-based networking with built-in NetworkPolicy enforcement and Hubble for observability.
+        subgraph MANAGED["AWS Managed Services"]
+            rds["RDS PostgreSQL<br>Multi-AZ · auto-backup"]
+            secrets["Secrets Manager<br>LLM API keys via IRSA"]
+            ecr["ECR<br>container images"]
+            xray["X-Ray<br>distributed tracing"]
+        end
 
-Ingress uses ingress-nginx with cert-manager for automatic Let's Encrypt TLS certificate provisioning and renewal. OAuth2 Proxy with Dex provides OIDC authentication, bridging to existing identity providers (LDAP, GitHub organisations, Google Workspace, or any OIDC-compliant IdP).
+        co -.->|"kubectl READ"| EKS_diag
+        l -->|"HTTPS"| ext["api.openai.com"]
+        re --> rds
+        l --> secrets
+    end
 
-Data services run as in-cluster StatefulSets. PostgreSQL uses the CloudNativePG operator, which manages three-replica clusters with automated failover, continuous backup to S3-compatible storage via Barman, and point-in-time recovery. Redis uses the Bitnami Redis Helm chart with three Sentinel nodes and two replicas, providing automatic failover and AOF persistence.
+    user --> alb
+    pd --> alb
+```
 
-Secrets management uses HashiCorp Vault in HA mode (three replicas with Raft consensus) for organisations with existing Vault infrastructure, or Sealed Secrets (Bitnami) for a simpler, GitOps-friendly approach where encrypted secrets are committed directly to the repository.
+**EKS Component Mapping.** The following table maps platform components to their AWS managed service counterparts:
 
-Storage uses Longhorn, a cloud-native distributed block storage system that provides replicated volumes, snapshots, backups to S3-compatible storage, and disaster recovery volumes across availability zones.
+**Azure Kubernetes Service (AKS).** The AKS deployment mirrors the EKS architecture using Azure-native services. The following diagram shows the complete AKS production architecture with Azure Front Door, Application Gateway, in-cluster services, and managed Azure services (Azure DB, Azure Cache, Key Vault, ACR).
 
-Observability uses the kube-prometheus-stack (Prometheus for metrics, Grafana for dashboards, Alertmanager for alert routing), Loki for log aggregation, Tempo for distributed tracing, and the OpenTelemetry Collector for instrumentation. The entire observability stack is deployed via Helm charts with persistent storage for metrics and logs.
+```mermaid
+graph TB
+    subgraph INTERNET_az["Internet"]
+        user_az["User Browser"]
+        pd_az["PagerDuty"]
+    end
 
-Security uses Kyverno for policy enforcement (requiring non-root containers, read-only root filesystems, and resource limits), Falco for runtime threat detection (monitoring syscall patterns for anomalous behaviour), and the Trivy Operator for continuous image vulnerability scanning with configurable severity thresholds.
+    subgraph AZURE["Azure Subscription"]
+        dns["Azure DNS"]
+        fd["Front Door + WAF"]
+        agw["Application Gateway v2<br>(AGIC)"]
 
-### 13.3 Deployment Economics
+        dns --> fd --> agw
+
+        subgraph AKS_diag["AKS Cluster"]
+            direction TB
+
+            subgraph ANALYSER_az["analyser namespace"]
+                f_az["frontend :3000"]
+                gw_az["gateway :8000"]
+                o_az["orchestrator :8001"]
+                co_az["collector :8002"]
+                pr_az["processor :8003"]
+                l_az["llm :8004"]
+                re_az["reports :8005"]
+                sc_az["scenario :8006"]
+                r_az[("redis")]
+            end
+
+            subgraph MON_az["observability"]
+                mp["Managed Prometheus"]
+                mg["Managed Grafana"]
+                ci["Container Insights"]
+                ai["App Insights"]
+            end
+
+            agw --> f_az
+            agw --> gw_az
+            gw_az --> o_az
+            o_az --> co_az
+            o_az --> pr_az
+            o_az --> l_az
+            o_az --> re_az
+            o_az <--> r_az
+        end
+
+        subgraph MANAGED_az["Azure Managed Services"]
+            pg["Azure DB for PostgreSQL<br>Flexible · Zone-redundant HA"]
+            kv["Key Vault<br>LLM keys via CSI Driver"]
+            acr["ACR · geo-replicated"]
+            redis_az2["Azure Cache for Redis<br>Enterprise · Active-Active"]
+        end
+
+        co_az -.->|"kubectl READ"| AKS_diag
+        l_az -->|"HTTPS"| ext_az["api.openai.com"]
+        re_az --> pg
+        l_az -.->|"CSI volume mount"| kv
+        r_az -.->|"or use"| redis_az2
+    end
+
+    user_az --> fd
+    pd_az --> fd
+```
+
+**AKS Component Mapping.** The following table maps platform components to their Azure managed service counterparts:
+
+**Self-Managed Kubernetes.** For organisations running their own Kubernetes clusters on bare metal, VPS providers, or private cloud, the self-managed deployment model uses exclusively open-source, in-cluster solutions. The following diagram shows the complete architecture with Cloudflare edge, ingress-nginx, in-cluster CNPG PostgreSQL, Redis Sentinel, HashiCorp Vault, Longhorn storage, and the full kube-prometheus-stack observability suite.
+
+```mermaid
+graph TB
+    subgraph INTERNET_sm["Internet"]
+        cf["Cloudflare<br>DNS · DDoS · WAF (free)"]
+    end
+
+    cf --> lb["HAProxy / MetalLB / Nginx<br>L4 LB · TCP 443 pass-through"]
+    lb --> cluster
+
+    subgraph cluster["Self-Managed K8s (k3s / kubeadm / RKE2)"]
+        direction TB
+
+        subgraph INGRESS_sm["ingress-nginx + cert-manager"]
+            tls["TLS · Let's Encrypt"]
+            oauth["OAuth2 Proxy"]
+        end
+
+        subgraph ANALYSER_sm["analyser namespace"]
+            direction TB
+            f_sm["frontend :3000"]
+            gw_sm["gateway :8000"]
+            o_sm["orchestrator :8001"]
+            co_sm["collector :8002"]
+            pr_sm["processor :8003"]
+            l_sm["llm :8004"]
+            re_sm["reports :8005"]
+            sc_sm["scenario :8006"]
+            r_sm[("redis")]
+        end
+
+        subgraph DATA_sm["data layer"]
+            pg_sm[("PostgreSQL<br>CNPG · 3 replicas")]
+            redis_s["Redis<br>Sentinel · 3 replicas"]
+        end
+
+        subgraph MON_sm["kube-prometheus-stack"]
+            prom["Prometheus"]
+            gf["Grafana"]
+            loki["Loki"]
+            tempo["Tempo"]
+            am["Alertmanager"]
+        end
+
+        subgraph SEC_sm["security"]
+            vault["Vault (HA)<br>LLM API keys"]
+            kyverno["Kyverno"]
+            falco["Falco"]
+            trivy["Trivy Operator"]
+        end
+
+        subgraph STORAGE["Longhorn · replicated block storage"]
+            pv1["Postgres PVC"]
+            pv2["Redis PVC"]
+        end
+
+        INGRESS_sm --> f_sm
+        INGRESS_sm --> gw_sm
+        gw_sm --> o_sm
+        o_sm --> co_sm
+        o_sm --> pr_sm
+        o_sm --> l_sm
+        o_sm --> re_sm
+        o_sm <--> r_sm
+        re_sm --> pg_sm
+        l_sm -.->|"inject secrets"| vault
+    end
+
+    co_sm -.->|"kubectl READ"| cluster
+    l_sm -->|"HTTPS"| ext_sm["api.openai.com"]
+```
+
+**Self-Managed Component Mapping.** The following table maps each platform component to its in-cluster open-source counterpart:
+
+### 13.3 Cross-Platform Component Mapping
+
+The following table provides a comprehensive comparison of how each infrastructure and platform component is implemented across the three deployment models. The table demonstrates that every architectural concern — from DNS to secrets management to observability — has a managed-service option (for teams that prioritise operational simplicity over cost) and an open-source in-cluster option (for teams that prioritise cost and control).
+
+| Component | AWS EKS | Azure AKS | Custom K8s |
+|---|---|---|---|
+| Kubernetes cluster | EKS (managed) | AKS (managed) | k3s / kubeadm |
+| DNS | Route53 | Azure DNS | Cloudflare |
+| Load Balancer | ALB | App Gateway | MetalLB / HAProxy |
+| TLS certificates | ACM | Key Vault | cert-manager + LE |
+| Ingress controller | AWS LB Controller | AGIC | ingress-nginx |
+| Auth (OIDC/OAuth2) | ALB + Cognito | Entra ID + AGIC | Dex + OAuth2 Proxy |
+| PostgreSQL | RDS | Azure DB Flex | CNPG operator |
+| Redis | ElastiCache | Azure Cache | Sentinel chart |
+| LLM API key storage | Secrets Mgr + IRSA | Key Vault + CSI | Vault / Sealed Secrets |
+| Container registry | ECR | ACR | Harbor / GHCR |
+| Metrics | CloudWatch + AMP | Managed Prometheus | kube-prometheus |
+| Logs | CW Logs | Log Analytics | Loki + Promtail |
+| Traces | X-Ray (ADOT) | App Insights | Tempo + OTel |
+| Runtime security | GuardDuty | Defender for Containers | Falco |
+| Policy enforcement | OPA / Gatekeeper | Azure Policy | Kyverno |
+| Storage (PV) | EBS CSI | Azure Disk CSI | Longhorn |
+| GitOps | ArgoCD / Flux | ArgoCD / Flux | ArgoCD / Flux |
+
+### 13.4 Deployment Economics
 
 The cost structures of the three deployment models differ fundamentally. Managed-platform deployments (EKS, AKS) trade higher monthly infrastructure costs for reduced operational burden — the cloud provider manages the control plane, performs database backups, handles Redis failover, and provides integrated observability. Self-managed deployments trade lower infrastructure costs for increased operational complexity — the team must manage database replication, Redis failover, storage provisioning, backup strategies, and observability infrastructure.
 
@@ -712,6 +1657,170 @@ A comprehensive monthly cost breakdown for representative production-scale deplo
 | **Platform subtotal** | **~$580/mo** | **~$1,255/mo** | **~€55/mo** |
 
 LLM API costs are independent of the deployment model: gpt-4o-mini averages $0.15 per analysis; 100 analyses daily equates to approximately $450/month. Using the mock provider for pre-production environments eliminates this cost entirely for development and testing. Fine-tuning a smaller model or using cost-optimised providers (DeepSeek) can reduce production LLM costs by 60–80%.
+
+**Cost Distribution (AWS EKS Example).** The following pie chart illustrates the proportion of the approximate $580/month EKS platform cost attributed to each infrastructure component. Compute dominates at 64% of the total, followed by managed database services.
+
+```mermaid
+pie title Monthly EKS Platform Cost (~$580)
+    "Compute (4 nodes)" : 370
+    "PostgreSQL (RDS)" : 80
+    "K8s management" : 73
+    "Load Balancer + WAF" : 28
+    "Redis (ElastiCache)" : 17
+    "Observability" : 8
+    "Registry + Secrets" : 8
+```
+
+### 13.5 Daily Operational Workflows
+
+The following Mermaid sequence diagrams capture the three principal operational workflows: alert-triggered analysis, proactive pod scanning, and chaos engineering fault injection with evaluation. These workflows represent the day-to-day usage patterns that the platform is designed to support.
+
+**Workflow A: Alert-Triggered Analysis.** When an alert fires from PagerDuty or Alertmanager, the system receives an automated POST to the jobs endpoint, executes the pipeline, and posts the diagnosis to Slack with copyable kubectl commands.
+
+```mermaid
+sequenceDiagram
+    participant Alert as PagerDuty
+    participant Gateway as Gateway API
+    participant Pipeline as 5-Stage Pipeline
+    participant Slack as Slack
+    participant SRE as On-Call SRE
+
+    Alert->>Gateway: POST /api/jobs {namespace, pod_name}
+    Note over Alert,Gateway: orders-api in CrashLoopBackOff
+
+    Gateway->>Pipeline: Execute pipeline
+    Pipeline->>Pipeline: collecting → logs, describe, events
+    Pipeline->>Pipeline: processing → redact, filter
+    Pipeline->>Pipeline: llm_call → root cause analysis
+    Pipeline->>Pipeline: persisting → save to DB
+    Pipeline-->>Gateway: done — IncidentReport
+
+    Gateway-->>Slack: Root cause: OOMKilled<br>Fix: kubectl set resources --limits=256Mi
+    Slack-->>SRE: Reads diagnosis
+
+    SRE->>SRE: Copies kubectl command
+    SRE->>SRE: Applies fix — pod recovers
+    Note over SRE: Time from alert to fix: less than 2 min
+```
+
+**Workflow C: Chaos Engineering / Fault Injection.** The scenario service injects controlled faults into a test namespace, the analyser diagnoses them, and the evaluation harness verifies that the LLM correctly identified the root cause.
+
+```mermaid
+sequenceDiagram
+    participant SRE as Platform Team
+    participant Scenario as Scenario Service
+    participant K8s as K8s API
+    participant Pod as demo-app pod
+    participant Analyser as Analyser Pipeline
+    participant Eval as Evaluation
+
+    SRE->>Scenario: POST /api/scenarios/05-oom/apply
+    Scenario->>K8s: kubectl patch deployment<br>mem limit → 32Mi
+    K8s->>Pod: Pod restarts — OOMKilled
+    Note over Pod: Exit Code 137
+
+    SRE->>Analyser: POST /api/jobs {demo, demo-app}
+    Analyser->>K8s: kubectl logs, describe, events
+    Analyser->>Analyser: LLM diagnoses
+    Analyser-->>SRE: Report: "OOMKilled · resource · memory limit 32Mi"
+
+    SRE->>Eval: Verify: did LLM correctly identify OOM?
+    Eval-->>SRE: Root cause match · Category match
+
+    SRE->>Scenario: POST /api/scenarios/reset
+    Scenario->>K8s: Restore healthy baseline
+    Note over SRE: Ready for next scenario
+```
+
+### 13.6 Integration with Existing Incident Stack
+
+The following diagram shows how the analyser integrates with existing incident management infrastructure — receiving alerts from Alertmanager, PagerDuty, or Slack via a webhook handler, executing the analysis pipeline, and sending enriched diagnoses to multiple output destinations (Slack, Teams, Jira, Grafana annotations, and the dashboard).
+
+```mermaid
+graph TB
+    subgraph SOURCES["Alert Sources"]
+        am["Alertmanager"]
+        pd["PagerDuty"]
+        slack_in["Slack"]
+        teams_in["Teams"]
+    end
+
+    subgraph ROUTER["Event Router"]
+        webhook["Webhook handler"]
+    end
+
+    subgraph ANALYSER2["K8s LLM Incident Analyser"]
+        gateway2["Gateway API<br>POST /api/jobs"]
+        pipeline2["5-stage pipeline<br>collect → process → LLM → persist"]
+    end
+
+    subgraph OUTPUTS["Output Destinations"]
+        slack_out["Slack message<br>root cause + fix"]
+        teams_out["Teams message"]
+        pd_out["PagerDuty incident<br>enriched with analysis"]
+        grafana_ann["Grafana annotation"]
+        jira["Jira ticket<br>auto-created"]
+        dashboard["Dashboard<br>live SSE stream"]
+    end
+
+    am --> webhook
+    pd --> webhook
+    slack_in --> webhook
+    teams_in --> webhook
+
+    webhook -->|"POST /api/jobs"| gateway2
+    gateway2 --> pipeline2
+
+    pipeline2 --> slack_out
+    pipeline2 --> teams_out
+    pipeline2 --> pd_out
+    pipeline2 --> grafana_ann
+    pipeline2 --> jira
+    pipeline2 --> dashboard
+```
+
+### 13.7 Production Readiness Requirements
+
+The following diagram captures the infrastructure, security, observability, and CI/CD requirements that must be in place before deploying to production. This checklist is organised into four domains, each with specific, verifiable items.
+
+```mermaid
+graph TB
+    subgraph PROD["Production Readiness"]
+        subgraph INFRA["Infrastructure"]
+            i1["Multi-node cluster with autoscaling"]
+            i2["PostgreSQL with automated backups + PITR"]
+            i3["Redis with AOF persistence (or managed)"]
+            i4["Ingress + TLS termination"]
+            i5["HPA on processor (CPU-based)"]
+            i6["PodDisruptionBudget on orchestrator + reports"]
+        end
+
+        subgraph SEC["Security"]
+            s1["OIDC/OAuth2 on dashboard login"]
+            s2["API key auth on gateway endpoints"]
+            s3["Secrets in Vault / Secrets Mgr (never in env)"]
+            s4["NetworkPolicies: deny-all + explicit allow"]
+            s5["Non-root, read-only root FS, drop capabilities"]
+            s6["PodSecurityStandards: restricted"]
+            s7["Image vulnerability scanning (Trivy/Snyk)"]
+            s8["RBAC: collector read-only, scenario demo-only"]
+        end
+
+        subgraph OBS["Observability"]
+            o1["Prometheus /metrics on all services"]
+            o2["Grafana: pipeline, LLM latency, errors"]
+            o3["Structured JSON logs → Loki/CW/LA"]
+            o4["Distributed tracing: OTel → Tempo/X-Ray"]
+            o5["Alerts: 5xx, queue depth, LLM errors"]
+        end
+
+        subgraph CICD["CI/CD"]
+            c1["GitOps pipeline (ArgoCD or Flux)"]
+            c2["Environment promotion: staging → prod"]
+            c3["Canary or blue-green rollouts"]
+        end
+    end
+```
 
 ---
 
@@ -776,14 +1885,6 @@ The limitations identified — SQLite single-writer constraint, in-process job e
 As LLM capabilities continue to advance, costs continue to decrease, and structured output mechanisms become more reliable across providers, the patterns established in this work — contract-first development of LLM-assisted operational tools, structured evidence collection and redaction, asynchronous execution with real-time visibility, and reproducible evaluation through fault injection — will become increasingly applicable to a broader range of operational automation tasks, from database performance diagnosis to network incident analysis to security event triage.
 
 The K8s LLM Incident Analyser represents a practical step toward a future where Site Reliability Engineers are augmented by AI assistants that can rapidly process heterogeneous operational evidence, identify causal patterns, and suggest evidence-backed remediations — reducing mean time to resolution, democratising diagnostic expertise, and allowing human operators to focus on the creative and strategic aspects of incident response that machines cannot yet replicate.
-
-This dissertation has presented the K8s LLM Incident Analyser — a contract-first microservices platform that automates root-cause diagnosis for Kubernetes pod failures using Large Language Models. The system demonstrates that LLMs, when provided with structured cluster evidence and constrained to a strict JSON output schema, can accurately classify pod failure root causes across seven categories while producing human-readable evidence synthesis and executable remediation commands.
-
-The platform's architecture — seven loosely coupled FastAPI services, Redis-based publish-subscribe coordination, SQLite persistence, and a Next.js 15 real-time dashboard — demonstrates patterns applicable to any LLM-assisted operational tool: contract-first development with multi-pillar alignment, asynchronous analysis with synchronous visibility via SSE, privacy-preserving evidence processing through tiered redaction, and reproducible evaluation through fault injection with ground truth labelling.
-
-The evaluation framework confirms that LLM-based classification achieves higher accuracy than both keyword-based and rule-based baselines, particularly on scenarios requiring causal reasoning rather than keyword matching. More significantly, the LLM's ability to synthesise heterogeneous evidence sources into coherent, actionable diagnoses addresses the core operational challenge that motivated this work: reducing the cognitive burden on on-call engineers during production incidents.
-
-The system's production deployment architecture, covering AWS EKS, Azure AKS, and self-managed Kubernetes, demonstrates that LLM-assisted operational tooling can be deployed securely — with attention to network segmentation, secret management, RBAC, and observability — in real production environments. As LLM capabilities continue to advance and costs continue to decrease, the patterns established in this work will become increasingly applicable to a broader range of operational automation tasks.
 
 ---
 

@@ -22,6 +22,12 @@ Everything written about this platform, and when to read it.
 | [`../contracts/rpc/README.md`](../contracts/rpc/README.md) | Why proto3/gRPC is deferred to v2 (+ mapping rules) |
 | [`report_schema.json`](./report_schema.json) | The `IncidentReport` JSON schema as sent to LLM providers |
 
+## Advanced Topics
+
+| Document | Contents |
+|----------|----------|
+| [`log-simulation-and-scale-strategies.md`](./log-simulation-and-scale-strategies.md) | 20 techniques for simulating K8s logs (programmatic, mutation, container-based, static, deterministic) + 20 strategies for handling log volumes that exceed LLM context windows (preprocessing, chunking, RAG, multi-agent, streaming, alternative representations) |
+
 ## Historical (v1 monolith — superseded)
 
 | Document | Note |
