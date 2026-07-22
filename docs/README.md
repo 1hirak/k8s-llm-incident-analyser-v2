@@ -7,6 +7,7 @@ Everything written about this platform, and when to read it.
 | Document | Read it when… |
 |----------|---------------|
 | **[`DEEP-DIVE.md`](./DEEP-DIVE.md)** | You want to understand the **whole software** — design philosophy, architecture, a hop-by-hop trace of an analysis job, every service, the frontend, evaluation, testing, deployment, and an operational playbook. This is the flagship guide. |
+| **[`Technical-Documentation.md`](./Technical-Documentation.md)** | You need the **exhaustive A-to-Z reference** — every endpoint, env var, schema, enum, algorithm, test suite, CI job, and deployment detail, verified against the current microservices codebase. |
 | [`architecture.md`](./architecture.md) | You want the **10-minute** version: topology, responsibilities, data stores, pipeline stages. |
 | [`../contracts/README.md`](../contracts/README.md) | You are changing any API, schema, enum, or infra — the contracts are the Single Source of Truth and change **before** code. |
 
@@ -25,8 +26,7 @@ Everything written about this platform, and when to read it.
 
 | Document | Note |
 |----------|------|
-| [`Technical-Documentation.md`](./Technical-Documentation.md) | Exhaustive v1 single-process reference. Pipeline *semantics* still apply; architecture does not. |
-| [`index.html`](./index.html) | Rendered version of the v1 documentation. |
+| [`index.html`](./index.html) | Rendered version of the v1 (single-process) documentation. Superseded by `Technical-Documentation.md`, which now documents the v2 platform. |
 | [`Deep-Dive-05-OOM-Walkthrough.md`](./Deep-Dive-05-OOM-Walkthrough.md) | Narrative end-to-end trace of the OOM scenario (written against v1; the v2 service names differ, the pipeline stages are identical). |
 
 ---

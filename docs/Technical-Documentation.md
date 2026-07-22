@@ -1,19 +1,20 @@
 # K8s LLM Incident Analyser — Technical Documentation (A to Z)
 
-> **⚠️ Historical reference (v1 monolith).** This document describes the
-> original single-process FastAPI analyser. The platform has since been
-> re-architected into microservices with a Next.js dashboard — see
-> [`docs/architecture.md`](./architecture.md) for the current architecture
-> and [`contracts/`](../contracts/README.md) for the authoritative specs.
-> Pipeline semantics (collector → preprocessor → redactor → LLM → report)
-> are unchanged.
+> **Current architecture (v2 microservices).** This document is the
+> exhaustive reference manual for the microservices platform: seven FastAPI
+> services, Redis, SQLite, and a Next.js dashboard. For the narrative
+> "why" guide see [`DEEP-DIVE.md`](./DEEP-DIVE.md); for the 10-minute brief
+> see [`architecture.md`](./architecture.md); for the authoritative specs
+> (which change **before** code) see [`contracts/`](../contracts/README.md).
+> The v1 single-process monolith documented by earlier revisions of this
+> file no longer exists; pipeline *semantics* are unchanged.
 
 **Author:** Hirak Das
-**Date:** 21 July 2026
+**Date:** 22 July 2026 (rewritten for v2; first published 21 July 2026)
 **Repository:** [github.com/1hirak/k8s-llm-incident-analyser](https://github.com/1hirak/k8s-llm-incident-analyser)
-**Live Deployment:** AWS EC2 (eu-west-2) — `18.133.255.70:8000`
+**Contracts version:** `1.0.0` ([`contracts/VERSION`](../contracts/VERSION))
 
-A high-fidelity full-stack technical reference manual for the K8s LLM Incident Analyser — a dissertation research artefact that investigates whether large language models, fed with redacted Kubernetes evidence, can produce incident reports that are more accurate and more actionable than rule-based and keyword-based baselines. Covers FastAPI service architecture, the six-stage analysis pipeline, four LLM provider integrations (OpenAI, Anthropic, DeepSeek, Mock), two baseline classifiers, an evaluation harness with ten fault scenarios, Kubernetes deployment topology, and end-to-end telemetry traces.
+A high-fidelity full-stack technical reference manual for the K8s LLM Incident Analyser — a dissertation research artefact that investigates whether large language models, fed with redacted Kubernetes evidence, can produce incident reports that are more accurate and more actionable than rule-based and keyword-based baselines. Covers the contract-first microservice architecture, the asynchronous job pipeline with Server-Sent Events, seven services plus a shared kernel, four LLM provider integrations (Mock, OpenAI, Anthropic, DeepSeek), two baseline classifiers, an evaluation harness with ten fault scenarios, Kubernetes deployment topology, and end-to-end telemetry traces.
 
 ---
 
@@ -23,32 +24,37 @@ A high-fidelity full-stack technical reference manual for the K8s LLM Incident A
 2. [System Architecture](#2-system-architecture)
 3. [Technology Stack](#3-technology-stack)
 4. [Project Structure](#4-project-structure)
-5. [Build & Tooling](#5-build--tooling)
-6. [Application Bootstrap](#6-application-bootstrap)
-7. [API Surface](#7-api-surface)
-8. [Pipeline Architecture](#8-pipeline-architecture)
-9. [Data Models & Type System](#9-data-models--type-system)
-10. [Evidence Collection](#10-evidence-collection)
-11. [Preprocessing & Noise Filtering](#11-preprocessing--noise-filtering)
-12. [Secret Redaction](#12-secret-redaction)
-13. [Prompt Engineering](#13-prompt-engineering)
-14. [LLM Provider Layer](#14-llm-provider-layer)
-15. [Validation & Persistence](#15-validation--persistence)
-16. [Baseline Classifiers](#16-baseline-classifiers)
-17. [Evaluation Harness & Metrics](#17-evaluation-harness--metrics)
-18. [Demo Application & Fault Scenarios](#18-demo-application--fault-scenarios)
-19. [Kubernetes Integration](#19-kubernetes-integration)
-20. [Data Flow Traces](#20-data-flow-traces)
-21. [Deployment & Infrastructure](#21-deployment--infrastructure)
-22. [Testing & Quality Assurance](#22-testing--quality-assurance)
-23. [Evaluation Results](#23-evaluation-results)
-24. [Limitations & Future Roadmap](#24-limitations--future-roadmap)
+5. [Contracts & the Shared Kernel](#5-contracts--the-shared-kernel)
+6. [Build & Tooling](#6-build--tooling)
+7. [Service Conventions & Bootstrap](#7-service-conventions--bootstrap)
+8. [Public API Surface (gateway-svc)](#8-public-api-surface-gateway-svc)
+9. [Internal APIs](#9-internal-apis)
+10. [Orchestrator: Job State Machine & Pipeline](#10-orchestrator-job-state-machine--pipeline)
+11. [Evidence Collection (collector-svc)](#11-evidence-collection-collector-svc)
+12. [Preprocessing & Noise Filtering (processor-svc)](#12-preprocessing--noise-filtering-processor-svc)
+13. [Secret Redaction (processor-svc)](#13-secret-redaction-processor-svc)
+14. [Prompt Engineering (llm-svc)](#14-prompt-engineering-llm-svc)
+15. [LLM Provider Layer (llm-svc)](#15-llm-provider-layer-llm-svc)
+16. [Persistence & Stats (reports-svc)](#16-persistence--stats-reports-svc)
+17. [State Stores: Redis & SQLite](#17-state-stores-redis--sqlite)
+18. [Frontend (Next.js Dashboard)](#18-frontend-nextjs-dashboard)
+19. [Baseline Classifiers](#19-baseline-classifiers)
+20. [Evaluation Harness & Metrics](#20-evaluation-harness--metrics)
+21. [Demo Application & Fault Scenarios](#21-demo-application--fault-scenarios)
+22. [Kubernetes Integration](#22-kubernetes-integration)
+23. [Data Flow Traces](#23-data-flow-traces)
+24. [Deployment & Infrastructure](#24-deployment--infrastructure)
+25. [Testing & Quality Assurance](#25-testing--quality-assurance)
+26. [Evaluation Results](#26-evaluation-results)
+27. [Limitations & Future Roadmap](#27-limitations--future-roadmap)
 
 ---
 
 ## 1. Summary
 
 The K8s LLM Incident Analyser turns an ambiguous Kubernetes pod failure — a CrashLoopBackOff, an OOMKilled, a failing readiness probe — into a structured incident report with a likely root cause, an affected component, a severity, a confidence score, supporting evidence, and a concrete remediation plan, in under 10 seconds per pod, without leaking secrets to the LLM vendor.
+
+Version 2 wraps that pipeline in an **asynchronous microservices platform**: a user (or the dashboard) submits an analysis job, the job progresses through five visible stages while Server-Sent Events stream its progress live, and the finished report lands in a queryable store behind a REST API.
 
 ### The Problem
 
@@ -60,24 +66,25 @@ On-call engineers handling Kubernetes incidents face three compounding failures,
 
 Existing AIOps tools (Datadog Watchdog, Dynatrace Davis, New Relic AI) optimise for detection at fleet scale. Nobody optimises for the single-pod, single-incident, evidence-cited diagnosis that a human would write. That gap is the product.
 
-### The Solution: A Six-Stage Pipeline
+### The Solution: A Five-Stage Service Pipeline
 
-| Stage | Module | Input | Output | Wall Time |
-|-------|--------|-------|--------|-----------|
-| 1 | **Collector** | namespace + pod name | `RawEvidence` (logs, describe, events, restart count, container states) | < 1 s |
-| 2 | **Preprocessor** | `RawEvidence` | `EvidencePackage` (filtered, deduplicated, context-windowed) | < 50 ms |
-| 3 | **Redactor** | `EvidencePackage` | `EvidencePackage` with secrets masked | < 10 ms |
-| 4 | **Prompt Builder** | `EvidencePackage` + JSON schema | `(system_prompt, user_prompt)` tuple | < 5 ms |
-| 5 | **LLM Provider** | prompt tuple | `IncidentReport` (structured Pydantic object) | 2 – 8 s |
-| 6 | **Validator + Persist** | `IncidentReport` | validated report written to disk | < 10 ms |
+The v1 six-stage in-process pipeline is preserved semantically, but each stage is now an HTTP hop owned by a dedicated service, coordinated by the orchestrator:
 
-The pipeline is provider-agnostic: the same redacted evidence is sent to OpenAI, Anthropic, or DeepSeek via a factory pattern, with a deterministic Mock provider for testing. A `ReportValidator` rejects malformed LLM output before it reaches the caller.
+| Stage | Service (port) | Input | Output | Typical Wall Time |
+|-------|----------------|-------|--------|-------------------|
+| 1 — collect | collector-svc (:8002) | namespace + pod name | `RawEvidence` (logs, describe, events, restart count, container states) | < 1 s |
+| 2 — process | processor-svc (:8003) | `RawEvidence` | `EvidencePackage` (noise-filtered, deduplicated, context-windowed, **secrets redacted**) | < 50 ms |
+| 3 — llm_call | llm-svc (:8004) | `EvidencePackage` + JSON schema | `IncidentReport` (structured Pydantic object) | 2–8 s real provider, < 50 ms mock |
+| 4 — persist | reports-svc (:8005) | `IncidentReport` | `incident_id` (row in SQLite) | < 10 ms |
+| 5 — done | orchestrator-svc (:8001) | `incident_id` | terminal job state + SSE `done` event | — |
+
+Around the pipeline sit three more services: **gateway-svc** (:8000), the only public door; **scenario-svc** (:8006), which injects faults into the cluster for repeatable evaluation; and the **frontend** (:3000), a Next.js operations dashboard. Job state lives in **Redis** (hashes + pub/sub); durable reports and job snapshots live in **SQLite** (WAL mode).
 
 ### Research Question
 
 > Can a structured-output LLM, fed with redacted Kubernetes evidence and a strict JSON schema, produce incident reports whose failure-category accuracy and root-cause identification exceed those of a weighted keyword classifier and a priority-ordered rule-based classifier across ten canonical fault scenarios?
 
-The answer, measured end-to-end on a k3s cluster running on AWS EC2 with DeepSeek `deepseek-chat` as the LLM, is **yes — substantially**. Full results in [Section 23](#23-evaluation-results).
+The answer, measured end-to-end on a k3s cluster running on AWS EC2 with DeepSeek `deepseek-chat` as the LLM, is **yes — substantially**. Full results in [Section 26](#26-evaluation-results).
 
 ---
 
@@ -87,110 +94,186 @@ The answer, measured end-to-end on a k3s cluster running on AWS EC2 with DeepSee
 
 ```mermaid
 flowchart LR
-    OnCall["On-call Engineer\nor Automation"]
+    User["On-call Engineer"]
+    Browser["Next.js Dashboard\n:3000"]
 
-    subgraph Analyser["K8s LLM Incident Analyser"]
-        API["FastAPI Service\nPort 8000"]
-        Pipeline["6-Stage Pipeline\nCollect → Process → Redact → Prompt → LLM → Validate"]
+    subgraph Platform["K8s LLM Incident Analyser (microservices)"]
+        GW["gateway-svc :8000\n(public API)"]
+        ORCH["orchestrator-svc :8001\n(job state machine)"]
+        COLL["collector-svc :8002"]
+        PROC["processor-svc :8003"]
+        LLM["llm-svc :8004"]
+        REPO["reports-svc :8005"]
+        SCEN["scenario-svc :8006"]
+        REDIS[("Redis :6379\njob state + pub/sub")]
+        SQLITE[("SQLite\nincidents + jobs")]
     end
 
-    subgraph Cluster["Kubernetes Cluster\n(k3s / Minikube / EKS)"]
-        DemoApp["Demo App Pod\n(fault-injectable)"]
-        K8sAPI["Kubernetes API\nkube-apiserver"]
+    subgraph Cluster["Kubernetes Cluster (k3s / minikube / kind)"]
+        DemoApp["demo-app pod\nnamespace: demo"]
+        K8sAPI["kube-apiserver"]
     end
 
-    subgraph LLM["LLM Vendor"]
+    subgraph Vendor["LLM Vendor"]
         Provider["OpenAI / Anthropic /\nDeepSeek / Mock"]
     end
 
-    OnCall -->|"POST /analyse/pod/{ns}/{pod}"| API
-    API --> Pipeline
-    Pipeline -->|"kubectl logs/describe/events"| K8sAPI
-    K8sAPI -.->|scheduled| DemoApp
-    Pipeline -->|"HTTPS + Bearer token"| Provider
-    Provider -->|"JSON IncidentReport"| Pipeline
-    API -->|"JSON response"| OnCall
+    User --> Browser
+    Browser -->|"REST + SSE"| GW
+    GW --> ORCH
+    GW --> REPO
+    GW --> SCEN
+    ORCH --> COLL --> PROC --> LLM --> REPO
+    ORCH --> REDIS
+    REPO --> SQLITE
+    COLL -->|"kubectl (read-only)"| K8sAPI
+    SCEN -->|"kubectl patch (write)"| K8sAPI
+    K8sAPI -.-> DemoApp
+    LLM -->|"HTTPS + Bearer token"| Provider
+    Provider -->|"JSON IncidentReport"| LLM
 ```
 
-### Deployment Topology
+### The Three Communication Planes
+
+| Plane | Technology | Carries |
+|-------|-----------|---------|
+| **Public** | HTTP/JSON + SSE, browser ↔ gateway :8000 | All `/api/*` endpoints, `/health`, the job event stream |
+| **Internal sync** | HTTP/JSON between services (httpx) | Pipeline hops (`/collect`, `/process`, `/analyse`, `/reports`), proxy hops, `/health` checks |
+| **Internal async** | Redis hashes + pub/sub | Job state (`job:{job_id}`), event fanout (`job:{job_id}:events`), future work queue (`job:queue`) |
+
+There is no message broker and no gRPC in v1 of the platform — both are deliberate deferrals, documented with migration plans in [`contracts/events/README.md`](../contracts/events/README.md) and [`contracts/rpc/README.md`](../contracts/rpc/README.md).
+
+### Deployment Topology (Docker Compose)
+
+The reference topology is an 11-container Compose stack (7 platform services + Redis + frontend + the demo workload with its PostgreSQL). The SSOT lives in [`contracts/infra/docker-compose.yml`](../contracts/infra/docker-compose.yml); the repo-root `docker-compose.yml` mirrors it with repo-relative build contexts.
 
 ```mermaid
 flowchart TD
-    subgraph AWS["AWS EC2 — t3.small, 2 vCPUs, 1.9 GB RAM\neu-west-2, Ubuntu 22.04"]
-        subgraph Docker["Docker Compose"]
-            AnalyserC["analyser container\nk8s-llm-incident-analyser:latest\nPort 8000\npython:3.12-slim + kubectl 1.31"]
-            DemoC["demo-app container\nk8s-demo-app:latest\nPort 8001"]
-            DBC[("demo-db\npostgres:16-alpine\nPort 5432")]
-        end
-        subgraph K3s["K3s v1.36 (containerd)"]
-            K3sServer["k3s server\nembedded etcd (sqlite)"]
-            DemoPod["demo-app pod\nnamespace: demo"]
-        end
-        KubeCfg["/root/.kube/config\n(bind-mounted into analyser)"]
+    Browser["Browser"] -->|"http://localhost:3000"| FE
+
+    subgraph Compose["Docker Compose — analyser-net (11 containers)"]
+        FE["frontend :3000<br>Next.js 15 standalone (node server.js)"]
+        GW["gateway-svc :8000<br>public API · CORS · 60 req/min/IP · SSE proxy"]
+        ORCH["orchestrator-svc :8001<br>job state machine · SSE pub/sub"]
+        REPO["reports-svc :8005<br>SQLite (WAL) · ./data:/data"]
+        SCEN["scenario-svc :8006<br>kubectl patch · kubeconfig mount (ro)"]
+        COLL["collector-svc :8002<br>kubectl · kubeconfig mount (ro)"]
+        PROC["processor-svc :8003<br>pure CPU"]
+        LLM["llm-svc :8004<br>4 LLM providers"]
+        REDIS[("Redis :6379 — job hashes + pub/sub<br>redis:7-alpine, AOF, allkeys-lru")]
+        DEMO["demo-app :8080 — fault target, NOT platform"]
+        DB[("demo-db — postgres:16-alpine, NOT platform")]
     end
 
-    AnalyserC -->|"kubectl\n~/.kube/config"| K3sServer
-    K3sServer --> DemoPod
-    DemoC --> DBC
-    AnalyserC -.->|"not used in E2E;\nreal pods come from k3s"| DemoC
+    FE -->|"REST + SSE — http://localhost:8000"| GW
+    GW -->|"/api/jobs*"| ORCH
+    GW -->|"/api/reports*, /api/stats"| REPO
+    GW -->|"/api/scenarios*"| SCEN
+    ORCH -->|"POST /reports, /jobs"| REPO
+    ORCH -->|"POST /collect"| COLL
+    ORCH -->|"POST /process"| PROC
+    ORCH -->|"POST /analyse"| LLM
+    ORCH --- REDIS
+    DEMO --- DB
 ```
+
+### Service Responsibility Matrix
+
+| Service | Port | Responsibility | State | External calls |
+|---------|------|----------------|-------|----------------|
+| gateway | 8000 | Public API; proxies to internal services; CORS `*`; sliding-window rate limit; SSE passthrough with anti-buffering headers | — | orchestrator, reports, scenario (proxy); llm + collector (`/health` aggregation) |
+| orchestrator | 8001 | Job lifecycle (7-state machine); coordinates collector→processor→llm→reports; publishes Redis events; archives terminal state | Redis | collector, processor, llm, reports |
+| collector | 8002 | Wraps kubectl subprocess; pod name auto-resolution via label selector | — | kube-apiserver (read) |
+| processor | 8003 | Noise/signal log filtering with context windows; secret/PII redaction (7 categories) | — | none (pure CPU) |
+| llm | 8004 | Provider integrations + prompt building + output validation; holds all external API keys | — | OpenAI / Anthropic / DeepSeek APIs |
+| reports | 8005 | Owns SQLite (single writer, WAL); reports + job snapshots; dashboard stats | SQLite | none |
+| scenario | 8006 | Lists/applies/resets fault scenarios via kubectl strategic-merge patch; tracks active scenario (409 on conflict) | in-memory | kube-apiserver (write) |
+| frontend | 3000 | Next.js 15 dashboard (App Router, Tailwind v4, shadcn/ui) | — | gateway only |
+
+### Trust Boundaries and Security Model
+
+1. **Only gateway-svc is public.** Internal services bind to the Compose network / cluster DNS; nothing external routes to them. In Kubernetes, only gateway (NodePort 30080) and frontend (NodePort 30030) are exposed.
+2. **Secrets flow one way.** `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` exist only in llm-svc's environment. Evidence is redacted by processor-svc *before* llm-svc (and therefore any vendor) sees it.
+3. **Cluster access is split by least privilege.** collector-svc runs with a read-only ClusterRole (pods, pods/log, events — get/list/watch). scenario-svc runs with a Role scoped to the `demo` namespace (patch on deployments/services/configmaps; no delete). No other service has any cluster credentials.
+4. **Database ownership.** reports-svc is the single writer to the SQLite file; every other service goes through its HTTP API. Redis is owned by orchestrator-svc.
+5. **No authentication in v1.** The public API is open with permissive CORS — acceptable for a dissertation artefact on a private network, explicitly listed as a limitation ([Section 27](#27-limitations--future-roadmap)).
+
+### Key Design Decisions and Their Trade-offs
+
+| Decision | Rationale | Cost |
+|----------|-----------|------|
+| Asynchronous jobs (`202` + SSE) instead of synchronous analysis | LLM calls take 2–30 s; browsers and proxies time out; progress is UX-valuable | More moving parts: Redis, job state machine, SSE |
+| Redis as primary job store, SQLite as durable snapshot | Sub-ms hash reads for polling; pub/sub gives free SSE fanout; list pre-seeds v2 worker scaling | Two stores to keep consistent (archival is best-effort) |
+| Monorepo shared kernel (`k8s-llm-shared`) instead of per-service models | Zero schema drift; the contract is importable code | All services rebuild when shared changes |
+| kubectl-as-subprocess instead of the Python client | Battle-tested auth (kubeconfig contexts, exec plugins, OIDC), no client-library version skew | Requires the kubectl binary in collector/scenario images |
+| SQLite WAL instead of PostgreSQL | ~10 analyses/day at dissertation scale; zero-ops; single-writer is trivially safe | Does not scale horizontally (pinned 1 replica) |
+| REST instead of gRPC; Redis pub/sub instead of Kafka | Call frequency is ~10/day; latency is dominated by the LLM call | Revisit when throughput grows (migration plans written) |
 
 ### Full-Stack Component Map
 
 ```mermaid
 flowchart TD
-    subgraph FastAPI["FastAPI Application (app/)"]
-        Main["main.py\nFastAPI + CORS + routers"]
-        Routers["Routers (3)\nanalyse / reports / scenarios"]
-        Pipeline["Core Pipeline (7 modules)\ncollector → preprocessor → redactor\n→ prompts → llm → validator → persistence"]
-        Models["Pydantic Models (2)\nIncidentReport, EvidenceItem"]
+    subgraph Services["7 Microservices (services/)"]
+        GW["gateway-svc :8000<br>public entry, CORS, rate limit, SSE proxy"]
+        ORCH["orchestrator-svc :8001<br>job state machine, pipeline coordinator"]
+        COLL["collector-svc :8002<br>kubectl subprocess wrapper"]
+        PROC["processor-svc :8003<br>noise filter + PII redactor"]
+        LLM["llm-svc :8004<br>4 LLM providers, prompts, validation"]
+        REPO["reports-svc :8005<br>SQLite single-writer, stats"]
+        SCEN["scenario-svc :8006<br>kubectl patch, apply/reset faults"]
     end
 
-    subgraph LLMs["LLM Provider Layer (app/core/llm/)"]
-        Factory["get_provider()\nfactory + env-driven selection"]
-        Base["BaseLLMProvider\nABC"]
-        Mock["MockProvider\nheuristic, no API"]
-        OpenAI["OpenAIProvider\nchat.completions.parse()"]
-        Anthropic["AnthropicProvider\nmessages.parse()"]
-        DeepSeek["DeepSeekProvider\nhttpx + json_object mode"]
+    subgraph Shared["Shared Kernel"]
+        SHARED["k8s-llm-shared<br>enums, models, IDs, ProblemDetail, web helpers"]
+    end
+
+    subgraph Frontend["Frontend (frontend/)"]
+        FE["Next.js 15 Dashboard<br>App Router, Tailwind, shadcn/ui"]
+        FE_pages["5 pages: dashboard, /analyse, /jobs,<br>/reports, /scenarios (apply/reset)"]
+        FE_data["Data layer: api.ts (REST), sse.ts (EventSource)<br>Types: openapi-typescript → api.d.ts"]
     end
 
     subgraph Eval["Evaluation Framework (evaluation/)"]
-        Harness["EvaluationHarness\nrun_all + CLI"]
-        Metrics["metrics.py\nprecision / recall / f1"]
-        Keyword["KeywordClassifier\nweighted 3-tier scoring"]
-        RuleBased["RuleBasedClassifier\npriority-ordered rules"]
-        Truth["Ground Truth (10)\nJSON files per scenario"]
+        HARNESS["EvaluationHarness + CLI<br>run_all across 10 scenarios"]
+        METRICS["metrics.py<br>precision/recall/f1, aggregate"]
+        KW["KeywordClassifier<br>weighted 3-tier scoring"]
+        RB["RuleBasedClassifier<br>priority-ordered rules"]
+        GT["Ground Truth (10 JSON)<br>expected category, root cause, keywords"]
+        ADAPT["services.py<br>HTTP adapters → collector/processor/llm"]
     end
 
-    subgraph Demo["Demo App (demo-app/)"]
-        DemoAPI["FastAPI\nlifespan + fault endpoints"]
-        Faults["5 fault triggers\ncrash / oom / slow / startup / db"]
+    subgraph Demo["Demo Workload (demo-app/)"]
+        DEMO_API["FastAPI<br>lifespan + 5 fault endpoints"]
+        DEMO_FAULTS["faults: crash, oom, slow, startup, db"]
     end
 
     subgraph K8s["Kubernetes (k8s/)"]
-        Base4["base/ (4 manifests)\nns / cm / deploy / svc"]
-        Scenarios10["scenarios/ (10 fault.yaml)\nstrategic merge patches"]
-        AnalyserK8s["analyser/ (4 manifests)\nns / cm / rbac / deploy / svc"]
+        BASE["base/ — 4 manifests<br>namespace, configmap, deployment, service"]
+        SCENARIOS["scenarios/ — 10 fault.yaml<br>strategic merge patches"]
+        SERVICES_K8S["services/ — platform deployments<br>8 Deployments + RBAC + redis"]
     end
 
-    Main --> Routers
-    Routers --> Pipeline
-    Pipeline --> Models
-    Pipeline --> Factory
-    Factory --> Base
-    Base -.->|implemented by| Mock
-    Base -.->|implemented by| OpenAI
-    Base -.->|implemented by| Anthropic
-    Base -.->|implemented by| DeepSeek
-    Pipeline -.->|used by| Harness
-    Harness --> Metrics
-    Harness --> Keyword
-    Harness --> RuleBased
-    Harness --> Truth
-    Scenarios10 -.->|applied to| DemoAPI
-    DemoAPI --> Faults
-    Base4 -.->|deploys| DemoAPI
+    subgraph Stores["State Stores"]
+        REDIS[("Redis :6379<br>job hashes, pub/sub, queue")]
+        SQLITE[("SQLite — /data/reports.db<br>incidents + analysis_jobs")]
+    end
+
+    subgraph CI["CI/CD (.github/)"]
+        CI_TEST["ci.yml — 9-suite matrix + frontend"]
+        CI_DOCKER["docker.yml — build + publish 8 images"]
+    end
+
+    GW --- ORCH --- COLL --- PROC --- LLM
+    ORCH --- REPO --- SCEN
+    ORCH --- REDIS
+    REPO --- SQLITE
+    GW --- FE
+    SHARED -.-> GW & ORCH & COLL & PROC & LLM & REPO & SCEN & HARNESS
+    HARNESS --- ADAPT --- COLL --- PROC --- LLM
+    HARNESS --- METRICS --- KW --- RB --- GT
+    SCENARIOS -.-> DEMO_API --- DEMO_FAULTS
+    BASE -.-> DEMO_API
+    SERVICES_K8S -.-> Services
 ```
 
 ---
@@ -199,34 +282,38 @@ flowchart TD
 
 ### Complete Stack Matrix
 
-| Layer | Component | Version | Purpose |
-|-------|-----------|---------|---------|
-| **Language** | Python | 3.12 | Async-first, type-hinted, Pydantic-native |
-| **Web framework** | FastAPI | 0.115.* | Async API with OpenAPI generation |
-| **ASGI server** | Uvicorn[standard] | 0.34.* | Production-grade async server |
-| **Validation** | Pydantic | 2.* | Schema enforcement + structured LLM output |
-| **HTTP client** | httpx | 0.28.* | DeepSeek API + async test client |
-| **LLM SDK (OpenAI)** | openai | 1.59.* | `chat.completions.parse()` GA API |
-| **LLM SDK (Anthropic)** | anthropic | 0.45.* | `messages.parse()` with Pydantic output |
-| **LLM SDK (DeepSeek)** | httpx (direct) | 0.28.* | REST to `api.deepseek.com/v1/chat/completions` |
-| **Config** | python-dotenv | 1.* | `.env` loading |
-| **Logging** | structlog | 24.* | JSON-structured logs |
-| **K8s client** | kubectl (subprocess) | 1.31.0 | No in-cluster dependency, works against any kubeconfig |
-| **Container runtime** | Docker | 29.6.2 | Compose for local + EC2 |
-| **Orchestration** | Docker Compose | v5.3.1 | Multi-container dev stack |
-| **Lightweight k8s** | K3s | 1.36.2+k3s1 | EC2-compatible single-node cluster |
-| **Database (demo app)** | PostgreSQL | 16-alpine | Demo DB for dependency-failure scenarios |
-| **Testing** | pytest | 8.* | Unit + integration |
-| **Async testing** | pytest-asyncio | 0.24.* | `asyncio_mode = "auto"` |
-| **Coverage** | pytest-cov | 6.* | 92 % line coverage |
-| **Linting** | ruff | 0.8.* | E/F/I/N/W rules, E501 ignored |
-| **CI** | GitHub Actions | — | `ci.yml` + `docker.yml` workflows |
-| **Cloud** | AWS EC2 | t3.small | Free-tier deployment host |
-| **Registry** | GHCR | — | `ghcr.io/1hirak/k8s-llm-incident-analyser` |
+| Layer | Technology | Version | Role |
+|-------|-----------|---------|------|
+| Language (services) | Python | 3.12 (`>=3.12`) | All 8 service packages |
+| Web framework | FastAPI | 0.115.* | HTTP APIs in every service |
+| ASGI server | uvicorn[standard] | 0.32.* | `uvicorn app.main:app --host 0.0.0.0 --port <port>` |
+| Data validation | Pydantic | 2.10.* | All DTOs (via shared kernel) |
+| HTTP client | httpx | 0.28.* | Inter-service calls, DeepSeek provider, proxying |
+| Redis client | redis (asyncio) | >=5.2,<7 | Orchestrator job store |
+| LLM SDKs | openai / anthropic | 1.59.* / 0.45.* | Structured-output providers |
+| Database | SQLite (stdlib `sqlite3`) | 3.40+, WAL | Reports + job snapshots |
+| Cache/queue/pub-sub | Redis | 7-alpine | Job state, SSE fanout |
+| Cluster CLI | kubectl | v1.31.0 | collector + scenario images |
+| IDs | uuid-utils | >=0.10 | UUIDv7 (time-sortable) |
+| Logging | structlog | 24.* | Structured service logs |
+| Frontend framework | Next.js | 15.3.4 | App Router, `output: "standalone"` |
+| UI runtime | React | 19.1.0 | Server + client components |
+| Styling | Tailwind CSS | 4.1.10 | Dark-only design system |
+| Component kit | shadcn/ui (Radix) | new-york style | 14 primitives in `components/ui` |
+| Charts | recharts | 2.15.3 | Dashboard category/latency charts |
+| Type generation | openapi-typescript | 7.8.0 | `gateway.yaml` → `api.d.ts` |
+| Frontend language | TypeScript | 5.8.3 (strict) | Entire frontend |
+| Test runner (Python) | pytest + pytest-asyncio | 8.* / 0.24.* | `asyncio_mode = auto` everywhere |
+| Test doubles | fakeredis | >=2.26 | In-memory Redis for tests |
+| Test runner (TS) | Vitest + Testing Library | ^4.1.10 | jsdom component tests |
+| Linter/formatter | ruff | 0.8.* | `select = E,F,I,N,W`, line-length 100 |
+| Containers | Docker + Compose v2 | — | 11-container reference stack |
+| CI | GitHub Actions | — | 9-suite pytest matrix + frontend build + Docker publish |
+| Registry | GHCR | ghcr.io | 8 published images (`ghcr.io/<repo>/<name>-svc:latest`) |
 
 ### Why kubectl-as-subprocess (not the Python client)
 
-The official `kubernetes/client-python` library is heavy (~30 MB), requires in-cluster auth or complex kubeconfig parsing, and its async support is awkward. The analyser instead shells out to `kubectl` — a single static binary available in the container image — and parses stdout. This is a deliberate trade-off: subprocess overhead is negligible (~10 ms per call), and the approach works against any kubeconfig the container can see, including a bind-mounted Minikube or k3s config. The cost is text parsing, which is handled by the preprocessor.
+The official `kubernetes` Python client lags the cluster API and re-implements authentication badly. Shelling out to `kubectl` inherits the user's kubeconfig — contexts, exec-based auth (aws-iam-authenticator, kubelogin), certificate paths — with zero code. Every call is wrapped with `subprocess.run(..., capture_output=True, text=True, timeout=self.timeout, check=False)`; failures degrade to empty strings instead of raising, so a missing log or event stream never kills a job. The trade-off (needing the kubectl binary inside two images) is accepted and handled in the Dockerfiles ([Section 6](#6-build--tooling)).
 
 ---
 
@@ -234,666 +321,378 @@ The official `kubernetes/client-python` library is heavy (~30 MB), requires in-c
 
 ### Annotated Source Tree
 
-```text
+```
 k8s-llm-incident-analyser/
-|-- app/                                # Main FastAPI application
-|   |-- __init__.py                     # Package marker (empty)
-|   |-- main.py                         # FastAPI app + CORS + router includes (30 lines)
-|   |
-|   |-- api/                            # HTTP route layer
-|   |   |-- __init__.py                 # Package marker (empty)
-|   |   |-- analyse.py                  # POST /pod/{ns}/{pod} - the 6-stage pipeline (44 lines)
-|   |   |-- reports.py                  # GET / + GET /{id} - report persistence (20 lines)
-|   |   `-- scenarios.py                # GET / - dynamic k8s/scenarios/ read (18 lines)
-|   |
-|   |-- core/                           # Pipeline + infrastructure
-|   |   |-- __init__.py                 # Package marker (empty)
-|   |   |-- collector.py                # kubectl wrapper + RawEvidence (127 lines)
-|   |   |-- preprocessor.py             # noise/signal filter + EvidencePackage (86 lines)
-|   |   |-- redactor.py                 # 7 PII/secret regex patterns (32 lines)
-|   |   |-- prompts.py                  # system + user prompt templates (64 lines)
-|   |   |-- validator.py                # IncidentReport schema validator (39 lines)
-|   |   |-- persistence.py              # file-based JSON report store (73 lines)
-|   |   |
-|   |   `-- llm/                        # Provider layer
-|   |       |-- __init__.py             # get_provider() factory (28 lines)
-|   |       |-- base.py                 # BaseLLMProvider ABC (10 lines)
-|   |       |-- mock_provider.py        # heuristic classifier (45 lines)
-|   |       |-- openai_provider.py      # chat.completions.parse() GA (51 lines)
-|   |       |-- anthropic_provider.py   # messages.parse() + Pydantic (37 lines)
-|   |       `-- deepseek_provider.py    # httpx + json_object mode (70 lines)
-|   |
-|   `-- models/                         # Pydantic domain models
-|       |-- __init__.py                 # Re-exports 4 symbols (4 lines)
-|       |-- evidence.py                 # EvidenceItem (10 lines)
-|       `-- incident.py                 # IncidentReport + FailureCategory + Severity (27 lines)
-|
-|-- demo-app/                           # Fault-injectable workload
-|   |-- app/
-|   |   |-- __init__.py                 # Package marker (empty)
-|   |   `-- main.py                     # FastAPI + lifespan + 5 fault endpoints (62 lines)
-|   |-- Dockerfile                      # python:3.12-slim, port 8001 (7 lines)
-|   `-- requirements.txt                # fastapi + uvicorn (2 lines)
-|
-|-- evaluation/                         # Research evaluation framework
-|   |-- __init__.py                     # Package marker (empty)
-|   |-- harness.py                      # EvaluationHarness + CLI (299 lines)
-|   |-- metrics.py                      # EvaluationResult + precision/recall/f1 (114 lines)
-|   |
-|   |-- baselines/
-|   |   |-- __init__.py                 # Package marker (empty)
-|   |   |-- keyword.py                  # 3-tier weighted keyword classifier (231 lines)
-|   |   `-- rulebased.py                # Priority-ordered rule classifier (277 lines)
-|   |
-|   `-- ground_truth/                   # 10 JSON files - one per scenario
-|       |-- 01-missing-env.json         # config / critical
-|       |-- 02-db-unavailable.json      # dependency / high
-|       |-- 03-crashloop.json           # crash / critical
-|       |-- 04-imagepull.json           # image / critical
-|       |-- 05-oom.json                 # resource / high
-|       |-- 06-readiness.json           # probe / medium
-|       |-- 07-liveness.json            # probe / high
-|       |-- 08-bad-configmap.json       # config / medium
-|       |-- 09-app-exception.json       # crash / high
-|       `-- 10-wrong-port.json          # network / medium
-|
-|-- k8s/                                # Kubernetes manifests
-|   |-- base/                           # Base deployment (applied first)
-|   |   |-- namespace.yaml              # Namespace: demo (4 lines)
-|   |   |-- configmap.yaml              # demo-config: APP_ENV, LOG_LEVEL (8 lines)
-|   |   |-- deployment.yaml             # demo-app deployment with probes (48 lines)
-|   |   `-- service.yaml                # demo-app-svc ClusterIP (12 lines)
-|   |
-|   |-- analyser/                       # Analyser deployment manifests
-|   |   |-- configmap.yaml              # analyser-config: LLM_PROVIDER, LLM_MODEL
-|   |   |-- rbac.yaml                   # ServiceAccount + ClusterRole pod-reader (31 lines)
-|   |   |-- deployment.yaml             # analyser deployment (66 lines)
-|   |   `-- service.yaml                # analyser-svc ClusterIP
-|   |
-|   `-- scenarios/                      # 10 strategic-merge-patch fault injections
-|       |-- 01-missing-env/fault.yaml   # DATABASE_URL: ""
-|       |-- 02-db-unavailable/fault.yaml# DATABASE_URL: postgresql://unavailable
-|       |-- 03-crashloop/fault.yaml     # command: ["/bin/nonexistent"]
-|       |-- 04-imagepull/fault.yaml     # image: demo-app:nonexistent-tag
-|       |-- 05-oom/fault.yaml           # resources.limits.memory: 32Mi
-|       |-- 06-readiness/fault.yaml     # readinessProbe: /does-not-exist
-|       |-- 07-liveness/fault.yaml      # livenessProbe: /fault/slow
-|       |-- 08-bad-configmap/fault.yaml # ConfigMap LOG_LEVEL: INVALID
-|       |-- 09-app-exception/fault.yaml # env STARTUP_FAULT: crash
-|       `-- 10-wrong-port/fault.yaml    # Service targetPort: 9999
-|
-|-- tests/                              # 339 tests total
-|   |-- __init__.py                     # Package marker (empty)
-|   |-- fixtures/
-|   |   |-- __init__.py                 # Package marker (empty)
-|   |   `-- scenario_evidence.py        # 10 EvidencePackage fixtures for testing
-|   |-- unit/                           # 330 unit tests
-|   |   |-- __init__.py                 # Package marker (empty)
-|   |   |-- test_api.py                 # 4 tests - analyse + health endpoints
-|   |   |-- test_baselines_scenarios.py # 80+ parametrized scenario tests
-|   |   |-- test_collector.py           # 15 tests - kubectl + pod resolution
-|   |   |-- test_demo_app.py            # 5 tests - fault endpoints + lifespan
-|   |   |-- test_harness.py             # 11 tests - evaluation harness
-|   |   |-- test_k8s_manifests.py       # 17 tests - YAML validation
-|   |   |-- test_keyword.py             # 29 tests - weighted scoring + disambiguation
-|   |   |-- test_llm_providers.py       # 18 tests - factory + providers
-|   |   |-- test_metrics.py             # 22 tests - EvaluationResult + aggregate
-|   |   |-- test_models.py              # 15 tests - Pydantic models
-|   |   |-- test_persistence.py         # 14 tests - file-based store
-|   |   |-- test_preprocessor.py        # 14 tests - noise/signal filter
-|   |   |-- test_prompts.py             # 8 tests - prompt builder
-|   |   |-- test_redactor.py            # 13 tests - 7 PII patterns
-|   |   |-- test_rulebased.py           # 37 tests - rules + priority
-|   |   `-- test_validator.py           # 13 tests - schema validation
-|   `-- integration/
-|       |-- __init__.py                 # Package marker (empty)
-|       `-- test_pipeline.py            # 9 tests - full pipeline composition
-|
-|-- docs/                               # Documentation
-|   |-- Technical-Documentation.md      # This file
-|   |-- architecture.md                 # Architecture overview (156 lines)
-|   `-- report_schema.json              # JSON Schema for IncidentReport (130 lines)
-|
-|-- scripts/
-|   `-- run_scenario.sh                 # K8s scenario runner (125 lines)
-|
-|-- .github/workflows/
-|   |-- ci.yml                          # Lint + unit + integration tests
-|   `-- docker.yml                      # Build + push to GHCR
-|
-|-- .env.example                        # Environment variable template
-|-- .gitignore                          # Python + IDE + docker ignores
-|-- Dockerfile                          # Analyser image: python:3.12-slim + kubectl (29 lines)
-|-- docker-compose.yml                  # 3 services: analyser + demo-app + db (64 lines)
-|-- Makefile                            # Dev tasks: install/test/lint/run/eval (45 lines)
-|-- pyproject.toml                      # Build + pytest + ruff config (22 lines)
-|-- README.md                           # Project README
-|-- requirements.txt                    # Runtime deps (8 lines)
-`-- requirements-dev.txt                # Dev deps (5 lines)
+├── contracts/                        # ★ Single Source of Truth (SSOT) — changes BEFORE code
+│   ├── README.md                     #    Philosophy, alignment rules, versioning, review checklist
+│   ├── VERSION                       #    1.0.0 (semver; enum changes = major bump)
+│   ├── api/                          #    OpenAPI 3.1 — 7 service boundaries
+│   │   ├── gateway.yaml              #      Public API + ALL shared component schemas (the schema hub)
+│   │   ├── orchestrator.yaml         #      Internal job API + raw_evidence/evidence_package schemas
+│   │   ├── collector.yaml            #      POST /collect contract + kubectl behaviour notes
+│   │   ├── processor.yaml            #      POST /process contract (filter + redact semantics)
+│   │   ├── llm.yaml                  #      POST /analyse + GET /providers + provider_info schema
+│   │   ├── reports.yaml              #      Persistence API + save_report/save_job request schemas
+│   │   └── scenario.yaml             #      Scenario list/apply/reset + 409 conflict semantics
+│   ├── database/
+│   │   ├── schema.sql                #    SQLite DDL — 2 tables, 5 indexes, 2 triggers, CHECK enums
+│   │   └── redis_schema.md           #    Redis keys, TTLs, pub/sub channels, job lifecycle
+│   ├── events/README.md              #    Why AsyncAPI is deferred to v2 (+ migration plan)
+│   ├── rpc/README.md                 #    Why proto3/gRPC is deferred to v2 (+ mapping rules)
+│   └── infra/
+│       ├── docker-compose.yml        #    Topology SSOT (10 services + ports + health checks)
+│       ├── docker-compose.dev.yml    #    Dev override (bind mounts + --reload + HMR)
+│       ├── .env.example              #    Every env var for every service (the env contract)
+│       └── k8s/                      #    namespace.yaml + RBAC SSOT copies
+├── services/
+│   ├── shared/                       # ★ k8s-llm-shared — the contract as a Python package
+│   │   ├── pyproject.toml            #    setuptools src-layout; pydantic + uuid-utils
+│   │   ├── src/k8s_llm_shared/
+│   │   │   ├── enums.py              #      5 Literal aliases (8/4/7/4/4 values, contract parity)
+│   │   │   ├── models.py             #      19 Pydantic models (domain + jobs + SSE + scenarios + stats)
+│   │   │   ├── errors.py             #      RFC 7807 ProblemDetail
+│   │   │   ├── ids.py                #      new_id() (UUIDv7), utc_now_iso()
+│   │   │   └── web.py                #      FastAPI error handlers + /health payload factory
+│   │   └── tests/test_shared_models.py   # 603-line contract-parity suite
+│   ├── gateway/                      # :8000 — public front door (proxy, CORS, rate limit)
+│   │   ├── app/{main,proxy,rate_limit}.py
+│   │   ├── tests/  Dockerfile  requirements.txt  pytest.ini
+│   ├── orchestrator/                 # :8001 — job state machine + pipeline coordinator
+│   │   ├── app/{main,pipeline,store}.py
+│   │   └── ...
+│   ├── collector/                    # :8002 — kubectl wrapper → RawEvidence
+│   │   ├── app/{main,collector}.py   #    Dockerfile installs kubectl v1.31.0
+│   │   └── ...
+│   ├── processor/                    # :8003 — filter + redact → EvidencePackage (pure CPU)
+│   │   ├── app/{main,preprocessor,redactor}.py
+│   │   └── ...
+│   ├── llm/                          # :8004 — providers + prompts + validation → IncidentReport
+│   │   ├── app/{main,prompts,validator}.py
+│   │   ├── app/llm/{__init__(registry+factory),base,mock_provider,openai_provider,
+│   │   │            anthropic_provider,deepseek_provider}.py
+│   │   └── ...
+│   ├── reports/                      # :8005 — SQLite single writer (reports, jobs, stats)
+│   │   ├── app/{main,db}.py          #    Dockerfile also bakes contracts/database/schema.sql
+│   │   └── ...
+│   └── scenario/                     # :8006 — fault injection via kubectl patch
+│       ├── app/{main,scenarios}.py   #    Dockerfile bakes k8s/scenarios, k8s/base, ground_truth
+│       └── ...
+├── frontend/                         # :3000 — Next.js 15 dashboard
+│   ├── src/app/                      #    Pages: /, /analyse, /jobs, /reports(+[id]), /scenarios
+│   ├── src/components/               #    14 feature components + ui/ (14 shadcn primitives)
+│   ├── src/lib/                      #    api.ts (REST client), sse.ts (EventSource), utils, logger
+│   ├── src/types/                    #    api.d.ts (generated from gateway.yaml) + index.ts aliases
+│   ├── src/__tests__/                #    20 Vitest files
+│   └── Dockerfile                    #    Multi-stage: dev / deps / builder / runner (standalone)
+├── demo-app/                         # Fault-injectable target workload (FastAPI) — NOT platform
+├── evaluation/                       # Research instrumentation
+│   ├── harness.py                    #    CLI + run_scenario + EvaluationHarness
+│   ├── services.py                   #    HTTP adapters: harness → collector/processor/llm services
+│   ├── metrics.py                    #    EvaluationResult, evaluate(), precision/recall/f1, aggregate()
+│   ├── baselines/{keyword,rulebased}.py
+│   └── ground_truth/*.json           #    10 scenario truth files
+├── k8s/
+│   ├── base/                         # demo-app namespace/configmap/deployment/service (ns: demo)
+│   ├── scenarios/                    # 10 fault.yaml strategic-merge patches
+│   └── services/                     # Platform manifests (ns: analyser) + RBAC + redis + frontend
+├── tests/
+│   ├── unit/                         # Root suite: metrics, harness, baselines, manifests, demo app
+│   ├── integration/test_pipeline.py  # In-process 5-service composition (no Docker/cluster/Redis)
+│   └── fixtures/scenario_evidence.py # 10 handcrafted EvidencePackage fixtures
+├── scripts/
+│   ├── run_scenario.sh               # CLI fault injector (apply/reset/all)
+│   ├── e2e_smoke.sh                  # Full-stack smoke test through the gateway
+│   └── run_all_tests.sh              # Runs all 9 suites, exit code = #failed suites
+├── docs/                             # You are here
+├── docker-compose.yml                # Mirrors contracts/infra (repo-relative contexts)
+├── docker-compose.dev.yml            # Dev override
+├── Makefile                          # install/dev/test/lint/up/e2e/eval/frontend-* targets
+├── pyproject.toml                    # pytest + ruff config
+├── requirements{,-dev}.txt           # Root tooling deps (per-service deps live in services/*/)
+└── .env.example                      # Copy to .env — LLM provider + keys + frontend URL
 ```
 
 ### Module Dependency Graph
 
 ```mermaid
 flowchart TD
-    main["app/main.py"]
-    analyse["app/api/analyse.py"]
-    reports["app/api/reports.py"]
-    scenarios["app/api/scenarios.py"]
+    SHARED["services/shared (k8s-llm-shared)"]
+    FE["frontend :3000"]
+    GW["gateway :8000"]
+    ORCH["orchestrator :8001"]
+    COLL["collector :8002"]
+    PROC["processor :8003"]
+    LLM["llm :8004"]
+    REPO["reports :8005"]
+    SCEN["scenario :8006"]
+    REDIS[("Redis — hashes, pub/sub, list")]
+    K8S["kube-apiserver"]
+    VENDOR["OpenAI / Anthropic / DeepSeek APIs"]
+    EVAL["evaluation/harness.py"]
 
-    collector["app/core/collector.py"]
-    pre["app/core/preprocessor.py"]
-    red["app/core/redactor.py"]
-    prompts["app/core/prompts.py"]
-    valid["app/core/validator.py"]
-    persist["app/core/persistence.py"]
-    factory["app/core/llm/__init__.py"]
-
-    base["app/core/llm/base.py"]
-    mock["app/core/llm/mock_provider.py"]
-    openai["app/core/llm/openai_provider.py"]
-    anthropic["app/core/llm/anthropic_provider.py"]
-    deepseek["app/core/llm/deepseek_provider.py"]
-
-    incident["app/models/incident.py"]
-    evidence["app/models/evidence.py"]
-
-    main --> analyse
-    main --> reports
-    main --> scenarios
-    analyse --> collector
-    analyse --> pre
-    analyse --> red
-    analyse --> factory
-    analyse --> persist
-    factory --> base
-    factory --> mock
-    factory --> openai
-    factory --> anthropic
-    factory --> deepseek
-    base --> incident
-    mock --> incident
-    openai --> incident
-    anthropic --> incident
-    deepseek --> incident
-    collector --> evidence
-    pre --> evidence
-    pre --> collector
-    red --> evidence
-    prompts --> incident
-    prompts --> evidence
-    valid --> incident
-    persist --> incident
-    reports --> persist
+    FE -->|"REST/SSE"| GW
+    GW -->|"proxy"| ORCH
+    GW --> REPO
+    GW --> SCEN
+    ORCH --> COLL --> PROC --> LLM
+    ORCH -->|"POST /reports + /jobs"| REPO
+    ORCH --> REDIS
+    COLL -->|"kubectl (read-only)"| K8S
+    SCEN -->|"kubectl (write)"| K8S
+    LLM --> VENDOR
+    EVAL -->|"HTTP — skips gateway + orchestrator"| COLL
+    EVAL --> PROC
+    EVAL --> LLM
+    SHARED -.->|"imported by ALL services + evaluation"| GW
+    SHARED -.-> ORCH & COLL & PROC & LLM & REPO & SCEN
 ```
+
+The evaluation harness deliberately bypasses the gateway and orchestrator: it drives collector/processor/llm directly so that evaluation measures the *pipeline*, not job bookkeeping.
 
 ---
 
-## 5. Build & Tooling
-
-### `pyproject.toml`
-
-```toml
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "k8s-llm-incident-analyser"
-version = "0.1.0"
-requires-python = ">=3.12"
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
-asyncio_mode = "auto"          # auto: @pytest.mark.asyncio not required
-
-[tool.ruff]
-line-length = 100
-target-version = "py312"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "N", "W"]
-ignore = ["E501"]              # line length handled by formatter
-```
-
-### Make Targets
-
-| Target | Command | Purpose |
-|--------|---------|---------|
-| `make install` | `pip install -r requirements.txt` | Runtime deps only |
-| `make dev` | `pip install -r requirements.txt -r requirements-dev.txt` | Runtime + dev deps |
-| `make test` | `pytest tests/unit -q` | Unit tests only |
-| `make test-cov` | `pytest tests/unit --cov=app --cov-report=term-missing --cov-fail-under=80` | With coverage gate |
-| `make lint` | `ruff check app tests evaluation` | Lint all source |
-| `make format` | `ruff --fix app tests evaluation` | Auto-fix imports |
-| `make clean` | `rm -rf .pytest_cache .ruff_cache .coverage htmlcov` | Clean caches |
-| `make run` | `uvicorn app.main:app --reload --port 8000` | Dev server |
-| `make run-scenario` | `bash scripts/run_scenario.sh $$SCENARIO` | Apply k8s fault |
-| `make eval` | `python -m evaluation.harness --classifier llm --output evaluation/results_llm.json` | Run evaluation |
-
-### Environment Variables
-
-| Variable | Required | Default | Used by | Purpose |
-|----------|----------|---------|---------|---------|
-| `LLM_PROVIDER` | no | `mock` | `get_provider()` | Selects provider: `mock`/`openai`/`anthropic`/`deepseek` |
-| `OPENAI_API_KEY` | if provider=openai | — | OpenAIProvider | Bearer token for OpenAI |
-| `ANTHROPIC_API_KEY` | if provider=anthropic | — | AnthropicProvider | Bearer token for Anthropic |
-| `DEEPSEEK_API_KEY` | if provider=deepseek | — | DeepSeekProvider | Bearer token for DeepSeek |
-| `LLM_MODEL` | no | provider-specific | All providers | Model name override |
-| `LLM_MAX_TOKENS` | no | `2000` | OpenAI/Anthropic/DeepSeek | Max response tokens |
-| `ENABLE_SCENARIOS` | no | `false` | `main.py` | Include `/scenarios` router |
-| `REPORTS_DIR` | no | `reports` | `persistence.py` | Report storage directory |
-| `KUBECONFIG` | no | `~/.kube/config` | kubectl (subprocess) | Path to kubeconfig |
-
-### Dockerfile (Analyser)
-
-`Dockerfile:1-29` — production image with kubectl:
-
-```dockerfile
-FROM python:3.12-slim
-
-# Install kubectl v1.31.0 — the analyser shells out to it
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
-    && curl -fsSL https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl \
-       -o /usr/local/bin/kubectl \
-    && chmod +x /usr/local/bin/kubectl \
-    && apt-get purge -y curl && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy app + k8s + evaluation + docs (k8s needed for /scenarios endpoint;
-# evaluation needed for `make eval` inside container)
-COPY app/ ./app/
-COPY k8s/ ./k8s/
-COPY evaluation/ ./evaluation/
-COPY docs/ ./docs/
-
-ENV LLM_PROVIDER=mock
-ENV PYTHONUNBUFFERED=1
-
-EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-### Docker Compose Stack
-
-`docker-compose.yml` defines three services for the local/EC2 dev stack:
-
-| Service | Image | Port | Depends On | Purpose |
-|---------|-------|------|------------|---------|
-| `analyser` | `k8s-llm-incident-analyser:latest` | 8000 | — | The analyser API |
-| `demo-app` | `k8s-demo-app:latest` | 8001 | `db` (healthy) | Fault-injectable workload |
-| `db` | `postgres:16-alpine` | 5432 | — | PostgreSQL for `demo-app`'s `DATABASE_URL` |
-
-The `analyser` service bind-mounts `~/.kube/config` and `~/.minikube` (or k3s equivalent) so that kubectl inside the container can reach the same cluster as the host. Healthchecks on all three services use `curl` + `/health` or `pg_isready`.
-
----
-
-## 6. Application Bootstrap
-
-### Bootstrap Sequence
-
-`app/main.py:1-30` — the entire FastAPI application is constructed at import time:
-
-```python
-import os
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
-from app.api import analyse, reports, scenarios
-
-app = FastAPI(
-    title="K8s LLM Incident Analyser",
-    description="LLM-assisted Kubernetes incident analysis pipeline",
-    version="0.1.0",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],          # Configurable for production
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-app.include_router(analyse.router, prefix="/analyse", tags=["Analysis"])
-app.include_router(reports.router, prefix="/reports", tags=["Reports"])
-
-if os.environ.get("ENABLE_SCENARIOS", "false").lower() == "true":
-    app.include_router(scenarios.router, prefix="/scenarios", tags=["Scenarios"])
-
-@app.get("/health", tags=["Health"])
-def health():
-    return {"status": "ok", "provider": os.environ.get("LLM_PROVIDER")}
-```
-
-### Key Design Choices
-
-1. **Module-level router inclusion** — routers are included once at import; no startup event needed. FastAPI's lazy OpenAPI generation handles the rest.
-2. **Conditional scenarios router** — the `/scenarios` endpoint is only mounted if `ENABLE_SCENARIOS=true`. In production, this endpoint exposes internal scenario names and is disabled by default.
-3. **No startup/shutdown events** — the analyser is stateless aside from the file-based report store. The collector creates a new `kubectl` subprocess per request; no persistent connection pool is needed.
-4. **Health endpoint is provider-aware** — `GET /health` returns the configured `LLM_PROVIDER` env var, making it easy to verify which backend a deployed instance is using without authenticating.
-
-### Lifespan vs Module-Level Singletons
-
-The pipeline modules (`collector`, `preprocessor`, `redactor`) are instantiated at module level in `app/api/analyse.py`:
-
-```python
-collector = KubernetesCollector()
-preprocessor = LogPreprocessor()
-redactor = LogRedactor()
-```
-
-This is deliberate: these classes hold no mutable state, no connections, and no credentials. They are pure functions wrapped as classes for testability. The LLM provider, by contrast, is fetched per request via `get_provider()` because the provider reads env vars at construction time and may hold an HTTP client.
-
----
-
-## 7. API Surface
-
-### Endpoint Reference
-
-| Method | Path | Auth | Request Body | Response Body | Status Codes |
-|--------|------|------|--------------|---------------|--------------|
-| `GET` | `/health` | none | — | `{"status": "ok", "provider": "deepseek"}` | 200 |
-| `POST` | `/analyse/pod/{namespace}/{pod_name}` | none (CORS `*`) | — | `IncidentReport` JSON | 200, 500 |
-| `GET` | `/reports/` | none | — | `{"reports": [...], "count": N}` | 200 |
-| `GET` | `/reports/{incident_id}` | none | — | `IncidentReport` JSON | 200, 404 |
-| `GET` | `/scenarios/` | none | — | `{"scenarios": ["01-missing-env", ...]}` | 200 |
-
-### `POST /analyse/pod/{namespace}/{pod_name}`
-
-The primary endpoint. Triggers the full six-stage pipeline.
-
-**Path parameters:**
-
-| Parameter | Type | Example | Notes |
-|-----------|------|---------|-------|
-| `namespace` | string | `demo` | Must exist in the cluster |
-| `pod_name` | string | `demo-app` or `demo-app-bd594d4bd-87nhj` | If exact name not found, the collector auto-resolves by label `app=demo-app` |
-
-**Response 200 — `IncidentReport`:**
-
-```json
-{
-  "incident_id": "inc-a3f9c2e1b4d8",
-  "incident_summary": "The demo-app pod is failing to start because the DATABASE_URL environment variable is missing or empty, causing the application lifespan to raise a RuntimeError on startup.",
-  "likely_root_cause": "Missing DATABASE_URL environment variable in the pod specification. The application's lifespan handler requires this variable to connect to the database.",
-  "affected_component": "demo-app deployment / environment configuration",
-  "failure_category": "config",
-  "severity": "critical",
-  "confidence": 0.95,
-  "supporting_evidence": [
-    {
-      "source": "pod_log",
-      "pod": "demo-app-abc123",
-      "timestamp": "2026-07-21T10:30:00Z",
-      "evidence": "RuntimeError: Missing required configuration: DATABASE_URL"
-    },
-    {
-      "source": "kubernetes_event",
-      "pod": "demo-app-abc123",
-      "timestamp": null,
-      "evidence": "BackOff started container demo-app with exit code 1"
-    }
-  ],
-  "suggested_fix": "Add the DATABASE_URL environment variable to the demo-app Deployment, sourced from a ConfigMap or Secret. Verify the value is non-empty before applying.",
-  "recommended_commands": [
-    "kubectl set env deployment/demo-app DATABASE_URL=postgresql://demo:demo@db:5432/demo -n demo",
-    "kubectl rollout status deployment/demo-app -n demo"
-  ],
-  "human_verification_steps": [
-    "Check that the pod reaches Running state after the patch",
-    "Verify the demo-app responds to /health with status ok",
-    "Confirm no further CrashLoopBackOff events appear in kubectl get events -n demo"
-  ]
-}
-```
-
-**Response 500 — pipeline error:**
-
-```json
-{
-  "detail": "Analysis failed: timeout waiting for kubectl logs"
-}
-```
-
-### `GET /reports/` and `GET /reports/{incident_id}`
-
-Reports are persisted to disk by `app/core/persistence.py`. The list endpoint returns summaries (no supporting evidence arrays, to keep payloads small); the by-ID endpoint returns the full `IncidentReport`.
-
-### `GET /scenarios/`
-
-When `ENABLE_SCENARIOS=true`, this endpoint reads the `k8s/scenarios/` directory and returns scenario names (directory names containing a `fault.yaml`). The implementation is dynamic — adding a new `k8s/scenarios/11-*/fault.yaml` file automatically appears in the API response without code changes.
-
-### OpenAPI Schema
-
-FastAPI auto-generates an OpenAPI 3.1 spec at `/openapi.json` and interactive docs at `/docs` (Swagger UI) and `/redoc`. The schema includes:
-
-- All five endpoints with path/query parameters
-- `IncidentReport` and `EvidenceItem` as component schemas
-- 422 validation error schema for Pydantic validation failures
-- CORS preflight responses
-
----
-
-## 8. Pipeline Architecture
-
-### The Six-Stage Pipeline
-
-```mermaid
-flowchart LR
-    Req["POST /analyse/pod/{ns}/{pod}"]
-    Req --> S1
-    subgraph Stage1["Stage 1: Collect"]
-        S1["KubernetesCollector.collect()"]
-        S1 --> S1a["kubectl logs"]
-        S1 --> S1b["kubectl logs --previous"]
-        S1 --> S1c["kubectl describe pod"]
-        S1 --> S1d["kubectl get events"]
-        S1 --> S1e["parse restart_count"]
-        S1 --> S1f["parse container_states"]
-        S1 --> S1g["find_pod_by_label()\nif exact name missing"]
-    end
-    S1 --> RawE["RawEvidence\n(namespace, pod, logs,\nprev_logs, status, events,\nrestart_count, container_states)"]
-    RawE --> S2
-    subgraph Stage2["Stage 2: Preprocess"]
-        S2["LogPreprocessor.process()"]
-        S2 --> S2a["filter noise\n(health/ready/metrics)"]
-        S2 --> S2b["keep signal lines\n(error/exception/OOM)"]
-        S2 --> S2c["add context window\n±3 lines around signal"]
-        S2 --> S2d["deduplicate"]
-        S2 --> S2e["cap at 100 lines"]
-        S2 --> S2f["extract k8s events\n(Warning or signal)"]
-    end
-    S2 --> EvPkg["EvidencePackage\n(current_logs, previous_logs,\npod_status_summary, k8s_events_filtered,\nrestart_count)"]
-    EvPkg --> S3
-    subgraph Stage3["Stage 3: Redact"]
-        S3["LogRedactor.redact()"]
-        S3 --> S3a["mask OpenAI keys"]
-        S3 --> S3b["mask Anthropic keys"]
-        S3 --> S3c["mask passwords"]
-        S3 --> S3d["mask DB URLs"]
-        S3 --> S3e["mask auth headers"]
-        S3 --> S3f["mask emails"]
-    end
-    S3 --> EvPkgR["EvidencePackage\n(redacted)"]
-    EvPkgR --> S4
-    subgraph Stage4["Stage 4: Prompt"]
-        S4["prompts.build_prompt()"]
-        S4 --> S4a["system prompt\n(rules + JSON schema)"]
-        S4 --> S4b["user prompt\n(evidence fields)"]
-    end
-    S4 --> Prompts["(system, user) tuple"]
-    Prompts --> S5
-    subgraph Stage5["Stage 5: LLM"]
-        S5["get_provider().analyse()"]
-        S5 --> S5a["OpenAI: chat.completions.parse()"]
-        S5 --> S5b["Anthropic: messages.parse()"]
-        S5 --> S5c["DeepSeek: httpx POST json_object"]
-        S5 --> S5d["Mock: heuristic classify"]
-    end
-    S5 --> Report["IncidentReport\n(Pydantic, structured)"]
-    Report --> S6
-    subgraph Stage6["Stage 6: Validate + Persist"]
-        S6["save_report()"]
-        S6 --> S6a["write to disk:\nreports/{timestamp}_{id}.json"]
-    end
-    S6 --> Resp["200 OK + IncidentReport JSON"]
-```
-
-### Why Six Stages, Not One Big Prompt
-
-A naive approach would shovel raw `kubectl logs` output into an LLM and ask for a diagnosis. The six-stage pipeline exists for four reasons:
-
-1. **Token economics** — Raw logs for a chatty pod can exceed 50,000 tokens. The preprocessor typically reduces this to under 2,000 tokens, a 25× reduction that directly cuts API spend.
-2. **Secret hygiene** — Logs routinely contain database URLs with credentials, bearer tokens, and API keys. The redactor masks these *before* the evidence leaves the container. This is a non-negotiable control for any production deployment.
-3. **Determinism before nondeterminism** — Stages 1–4 are deterministic Python. Only Stage 5 is LLM-driven. This means regressions in collection or preprocessing are caught by unit tests, not by LLM non-determinism.
-4. **Provider portability** — Stages 1–4 and 6 are provider-agnostic. Switching from OpenAI to DeepSeek is a one-line env change. The prompt schema and evidence format are identical across all providers.
-
-### Pipeline Error Handling
-
-`app/api/analyse.py:20-44` wraps the pipeline in a try/except that catches any exception, logs it with structlog (including a `request_id` for tracing), and returns HTTP 500. Persistence failures are caught separately — a failed `save_report` logs a warning but does **not** fail the request, since the report is already in the response body.
-
-```python
-router = APIRouter()
-log = structlog.get_logger()
-
-collector = KubernetesCollector()
-preprocessor = LogPreprocessor()
-redactor = LogRedactor()
-
-@router.post("/pod/{namespace}/{pod_name}", response_model=IncidentReport)
-async def analyse_pod(namespace: str, pod_name: str) -> IncidentReport:
-    request_id = str(uuid.uuid4())[:8]
-    log.info("analysis_started", id=request_id, ns=namespace, pod=pod_name)
-
-    try:
-        raw = collector.collect(namespace, pod_name)
-        filtered = preprocessor.process(raw)
-        safe = redactor.redact(filtered)
-        provider = get_provider()
-        report = await provider.analyse(safe)
-        try:
-            save_report(report)
-        except Exception as persist_err:
-            log.warning("report_persist_failed", id=request_id, error=str(persist_err))
-        log.info("analysis_complete", id=request_id, category=report.failure_category)
-        return report
-    except Exception as e:
-        log.error("analysis_failed", id=request_id, error=str(e))
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {e}")
-```
-
----
-
-## 9. Data Models & Type System
+## 5. Contracts & the Shared Kernel
+
+### Contract-First Philosophy
+
+`contracts/` is the undisputed Single Source of Truth. **No application code may be written until contracts are reviewed and approved.** The philosophy buys four guarantees: zero schema drift (one definition point per shape), independent buildability (a service can be implemented by reading only its contracts), testable boundaries (contract tests validate implementations), and frontend-backend alignment (TS types are generated from `gateway.yaml`).
+
+The five pillars:
+
+| Pillar | Location | Format | Status |
+|--------|----------|--------|--------|
+| Database | `contracts/database/` | SQL DDL + Redis schema doc | Active |
+| API | `contracts/api/` | OpenAPI 3.1 YAML (7 files) | Active |
+| Events | `contracts/events/` | AsyncAPI | **Deferred to v2** (rationale + plan written) |
+| RPC | `contracts/rpc/` | Protobuf (proto3) | **Deferred to v2** (rationale + plan written) |
+| Infrastructure | `contracts/infra/` | Compose + K8s YAML + env contract | Active |
+
+### Alignment Rules (non-negotiable)
+
+- **4.1 Naming** — snake_case everywhere: DB columns, OpenAPI JSON, SSE payloads, Redis hash fields, env var *values*. The single sanctioned exception is ALL_CAPS env var *names* (POSIX convention). The frontend may map to camelCase at its fetch boundary; the contract stays snake_case.
+- **4.2 Type parity** — SQLite `TEXT` (UUIDv7) ↔ OpenAPI `string, format: uuid` ↔ TS `string`; `TEXT` (enum) ↔ `string, enum` ↔ TS union; `TEXT` (JSON) ↔ `object`; `REAL` ↔ `number` (confidence 0.0–1.0); `INTEGER` ↔ `integer, int32` (latency_ms); `TEXT` (timestamp) ↔ `string, format: date-time`.
+- **4.3 Enum parity** — exactly 8 `failure_category`, 4 `severity`, 7 `job_status` values (below). Adding/removing a value requires a **major version bump** and coordinated PRs across all downstream services.
+- **4.4 IDs** — UUIDv7 strings (time-sortable), generated via `uuid_utils.uuid7()`, stored TEXT, never auto-increment integers.
+- **4.5 Timestamps** — ISO 8601 strings (`2026-07-21T10:05:33Z`), stored TEXT via `datetime('now')`, never Unix epochs.
+- **4.6 Errors** — RFC 7807 Problem Details on all 4xx/5xx: `type` (`https://errors.k8s-llm.io/<slug>`), `title`, `status`, `detail`, optional `instance`.
+- **4.7 Pagination** — envelope `{items, count, limit, offset}`; `?limit=20&offset=0`; default 20, max 100.
+- **4.8 Health** — every service exposes `GET /health` → `{status: "ok", service: "<name>-svc", version}`; llm-svc adds `provider`/`model`, collector/scenario/gateway may add `cluster`.
+
+Versioning is semver in `contracts/VERSION` (currently `1.0.0`): breaking → major, additive → minor, clarification → patch. Breaking changes require the version bump, downstream PRs, and coordinated deployment.
+
+### The Five Enums (exact values, exact parity)
+
+| Enum | Values | Appears in |
+|------|--------|-----------|
+| `FailureCategory` (8) | `crash`, `config`, `dependency`, `network`, `image`, `resource`, `probe`, `unknown` | SQL CHECK, OpenAPI, Pydantic, TS union |
+| `Severity` (4) | `low`, `medium`, `high`, `critical` | SQL CHECK, OpenAPI, Pydantic, TS union |
+| `JobStatus` (7) | `queued`, `collecting`, `processing`, `llm_call`, `persisting`, `done`, `failed` | SQL CHECK, Redis hash, OpenAPI, SSE, Pydantic, TS union |
+| `EvidenceSource` (4) | `pod_log`, `previous_pod_log`, `kubernetes_event`, `pod_status` | OpenAPI, Pydantic, TS union |
+| `ProviderId` (4) | `mock`, `openai`, `anthropic`, `deepseek` | OpenAPI (llm.yaml), Pydantic |
+
+Parity is *tested*, not trusted: `services/shared/tests/test_shared_models.py::TestSchemaSqlParity` asserts every enum literal appears quoted inside `contracts/database/schema.sql`.
+
+### `services/shared` — the Contract as a Python Package
+
+Every service installs `k8s-llm-shared` (`pip install /shared` in Dockerfiles; `pip install -e ./services/shared` locally). It exports 28 public symbols:
+
+- **Enums** (above) as `typing.Literal` aliases.
+- **Domain models** — `EvidenceItem`, `IncidentReport`, `ReportSummary`.
+- **Pipeline-internal models** (never in the public API) — `RawEvidence`, `EvidencePackage`.
+- **Job models** — `AnalysisRequest`, `JobCreated`, `JobState`.
+- **SSE payloads** — `SseStageEvent`, `SseDoneEvent`, `SseFailedEvent`.
+- **Scenario models** — `ScenarioSummary`, `ScenarioApplyResponse`.
+- **Stats models** — `LatencyPoint`, `StatsResponse`.
+- **Reports-internal** — `SaveReportRequest`, `SaveReportResponse`, `SaveJobRequest`.
+- **LLM** — `ProviderInfo`. **Health** — `HealthResponse`.
+- **Errors** — `ProblemDetail` (+ `ProblemDetail.of(...)` building `https://errors.k8s-llm.io/<slug>` URLs).
+- **Helpers** — `new_id()` (UUIDv7), `utc_now_iso()` (ISO 8601 `Z`), `add_error_handlers(app)` (RFC 7807 handlers), `health_payload(...)`.
+
+The canonical output contract, `IncidentReport`:
+
+| Field | Type | Constraint |
+|-------|------|-----------|
+| `incident_id` | str (UUIDv7) | default factory `new_id` |
+| `incident_summary` | str | min_length 10 |
+| `likely_root_cause` | str | min_length 10 |
+| `affected_component` | str | — |
+| `failure_category` | FailureCategory | 8-value enum |
+| `severity` | Severity | 4-value enum |
+| `confidence` | float | 0.0–1.0 |
+| `supporting_evidence` | list[EvidenceItem] | **min_length 1** |
+| `suggested_fix` | str | — |
+| `recommended_commands` | list[str] | kubectl commands |
+| `human_verification_steps` | list[str] | — |
+| `created_at` | str (ISO 8601) | default factory `utc_now_iso` |
+
+`model_config = {"extra": "ignore"}` — LLMs may add fields; they are dropped, never fatal.
 
 ### Class Diagram
 
 ```mermaid
 classDiagram
+    direction TB
 
-class EvidenceItem{
-    +string source
-    +string pod
-    +string timestamp
-    +string evidence
-}
+    class FailureCategory {
+        crash
+        config
+        dependency
+        network
+        image
+        resource
+        probe
+        unknown
+    }
 
-class IncidentReport{
-    +string incident_id
-    +string incident_summary
-    +string likely_root_cause
-    +string affected_component
-    +FailureCategory failure_category
-    +Severity severity
-    +float confidence
-    +EvidenceItem[] supporting_evidence
-    +string suggested_fix
-    +string[] recommended_commands
-    +string[] human_verification_steps
-}
+    class Severity {
+        low
+        medium
+        high
+        critical
+    }
 
-class FailureCategory{
-    crash
-    config
-    dependency
-    network
-    image
-    resource
-    probe
-    unknown
-}
+    class JobStatus {
+        queued
+        collecting
+        processing
+        llm_call
+        persisting
+        done
+        failed
+    }
 
-class Severity{
-    low
-    medium
-    high
-    critical
-}
+    class EvidenceSource {
+        pod_log
+        previous_pod_log
+        kubernetes_event
+        pod_status
+    }
 
-class RawEvidence{
-    +string namespace
-    +string pod_name
-    +string current_logs
-    +string previous_logs
-    +string pod_status
-    +string k8s_events
-    +int restart_count
-    +object container_states
-}
+    class EvidenceItem {
+        +source : EvidenceSource
+        +pod : str
+        +timestamp : str
+        +evidence : str
+    }
 
-class EvidencePackage{
-    +string namespace
-    +string pod_name
-    +string current_logs
-    +string previous_logs
-    +string pod_status_summary
-    +string k8s_events_filtered
-    +int restart_count
-}
+    class IncidentReport {
+        +incident_id : str
+        +incident_summary : str
+        +likely_root_cause : str
+        +affected_component : str
+        +failure_category : FailureCategory
+        +severity : Severity
+        +confidence : float
+        +supporting_evidence : list
+        +suggested_fix : str
+        +recommended_commands : list
+        +human_verification_steps : list
+        +created_at : str
+    }
 
-class EvaluationResult{
-    +string scenario_id
-    +bool root_cause_correct
-    +bool category_correct
-    +bool schema_valid
-    +float latency_s
-    +float confidence
-    +int evidence_count
-    +int remediation_keywords_hit
-}
+    class ReportSummary {
+        +incident_id : str
+        +namespace : str
+        +pod_name : str
+        +failure_category : FailureCategory
+        +severity : Severity
+        +confidence : float
+        +incident_summary : str
+        +created_at : str
+    }
 
-IncidentReport "1" --> "*" EvidenceItem : supporting_evidence
-IncidentReport --> FailureCategory
-IncidentReport --> Severity
-EvidencePackage ..> RawEvidence : process()
-EvaluationResult ..> IncidentReport : evaluate()
+    class RawEvidence {
+        +namespace : str
+        +pod_name : str
+        +current_logs : str
+        +previous_logs : str
+        +pod_status : str
+        +k8s_events : str
+        +restart_count : int
+        +container_states : list
+    }
+
+    class EvidencePackage {
+        +namespace : str
+        +pod_name : str
+        +current_logs : str
+        +previous_logs : str
+        +pod_status_summary : str
+        +k8s_events_filtered : str
+        +restart_count : int
+    }
+
+    class AnalysisRequest {
+        +namespace : str
+        +pod_name : str
+    }
+
+    class JobState {
+        +job_id : str
+        +namespace : str
+        +pod_name : str
+        +status : JobStatus
+        +stage : str
+        +incident_id : str
+        +latency_ms : int
+        +error : str
+        +created_at : str
+        +updated_at : str
+    }
+
+    class SseStageEvent {
+        +event : str
+        +job_id : str
+        +status : JobStatus
+        +stage : str
+        +updated_at : str
+    }
+
+    class SseDoneEvent {
+        +event : str
+        +job_id : str
+        +status : str
+        +incident_id : str
+        +failure_category : FailureCategory
+        +severity : Severity
+        +latency_ms : int
+    }
+
+    class SseFailedEvent {
+        +event : str
+        +job_id : str
+        +status : str
+        +error : str
+        +latency_ms : int
+    }
+
+    class EvaluationResult {
+        +scenario_id : str
+        +root_cause_correct : bool
+        +category_correct : bool
+        +schema_valid : bool
+        +latency_s : float
+        +confidence : float
+        +evidence_count : int
+        +remediation_keywords_hit : int
+    }
+
+    IncidentReport "1" --> "*" EvidenceItem : supporting_evidence
+    IncidentReport --> FailureCategory : uses
+    IncidentReport --> Severity : uses
+    ReportSummary --> FailureCategory : uses
+    ReportSummary --> Severity : uses
+    EvidencePackage ..> RawEvidence : derived from
+    EvidenceItem --> EvidenceSource : source
+    JobState --> JobStatus : status
+    SseStageEvent --> JobStatus : status
+    EvaluationResult ..> IncidentReport : evaluates
+
+    note for FailureCategory "enum · 8 values"
+    note for Severity "enum · 4 values"
+    note for JobStatus "enum · 7 values"
+    note for EvidenceSource "enum · 4 values"
 ```
-
-### Pydantic Constraints
-
-`app/models/incident.py:1-27` — the `IncidentReport` is the contract between the LLM and the rest of the system:
-
-| Field | Type | Constraint | Rationale |
-|-------|------|-----------|-----------|
-| `incident_id` | `str` | default `inc-{uuid4 hex[:12]}` | Stable identifier for persistence + retrieval |
-| `incident_summary` | `str` | `min_length=10` | Reject lazy one-word summaries |
-| `likely_root_cause` | `str` | `min_length=10` | Force the LLM to be specific |
-| `affected_component` | `str` | none | Free-form, validated by context not schema |
-| `failure_category` | `Literal[8]` | enum | The classification target |
-| `severity` | `Literal[4]` | enum | low/medium/high/critical |
-| `confidence` | `float` | `ge=0, le=1` | Bounded probability |
-| `supporting_evidence` | `list[EvidenceItem]` | `min_length=1` | Must cite at least one evidence item |
-| `suggested_fix` | `str` | none | Free-form remediation text |
-| `recommended_commands` | `list[str]` | none | kubectl commands to execute |
-| `human_verification_steps` | `list[str]` | none | Steps a human should take to verify |
-
-`model_config = {"extra": "ignore"}` — unknown LLM-generated fields are silently dropped rather than causing a validation error. This is deliberate: LLMs occasionally add fields like `priority` or `next_steps` that are not in the schema; rejecting the whole report for this would be brittle.
 
 ### `EvidenceItem` Source Taxonomy
 
@@ -906,393 +705,782 @@ EvaluationResult ..> IncidentReport : evaluate()
 
 ### JSON Schema Export
 
-`docs/report_schema.json` (130 lines) is the canonical JSON Schema for `IncidentReport`, generated from the Pydantic model via `IncidentReport.model_json_schema()`. It is injected into the LLM prompt (see [Section 13](#13-prompt-engineering)) and used by `ReportValidator` to validate LLM output.
+The full JSON Schema for `IncidentReport` is generated from Pydantic via `IncidentReport.model_json_schema()` and served at `docs/report_schema.json`. It is injected into each LLM prompt (see [Section 14](#14-prompt-engineering-llm-svc)) and used by `ReportValidator` to validate LLM output against the contract.
 
 ---
 
-## 10. Evidence Collection
+## 6. Build & Tooling
 
-### `KubernetesCollector` Deep Dive
+### `pyproject.toml` (repo root)
 
-`app/core/collector.py:1-127` — wraps `kubectl` subprocess calls. The class is stateless; each method is an independent kubectl invocation.
+```toml
+[project]            name = "k8s-llm-incident-analyser", version = "0.1.0", requires-python = ">=3.12"
+[tool.pytest.ini_options]  testpaths = ["tests"], pythonpath = ["."], asyncio_mode = "auto"
+[tool.ruff]          line-length = 100, target-version = "py312"
+[tool.ruff.lint]     select = ["E", "F", "I", "N", "W"], ignore = ["E501"]
+```
 
-#### Methods
+Root `requirements.txt` pins only `httpx==0.28.*` and `pydantic==2.10.*` (the evaluation harness's needs); `requirements-dev.txt` adds `pytest==8.*`, `pytest-asyncio==0.24.*`, `pytest-cov==6.*`, `ruff==0.8.*`, `fakeredis>=2.26`, `PyYAML==6.*`. Each service carries its own `requirements.txt`.
 
-| Method | kubectl Command | Returns | Notes |
-|--------|-----------------|---------|-------|
-| `_run(args)` | (internal) | `str` | Subprocess with 30 s timeout, `subprocess.run` with `capture_output=True`, returns stdout (empty string on error/timeout) |
-| `get_pod_logs(ns, pod, previous=False, tail=500)` | `kubectl logs <pod> -n <ns> --tail=500 --timestamps=true [--previous]` | `str` | `tail=500` default keeps payloads bounded; `--previous` gets logs from before the last crash |
-| `get_pod_description(ns, pod)` | `kubectl describe pod <pod> -n <ns>` | `str` | Contains Last State, Reason, Events section |
-| `get_events(ns, field_selector="")` | `kubectl get events -n <ns> --sort-by=.metadata.creationTimestamp [--field-selector=...]` | `str` | Sorted by creation time; field_selector optional |
-| `get_restart_count(ns, pod)` | `kubectl get pod <pod> -n <ns> -o jsonpath={.status.containerStatuses[0].restartCount}` | `int` | Uses jsonpath, not regex; returns 0 on parse failure |
-| `get_container_states(ns, pod)` | `kubectl get pod <pod> -n <ns> -o jsonpath={.status.containerStatuses}` | `dict` | Uses jsonpath + `json.loads`; returns `{}` on failure |
-| `_pod_exists(ns, pod)` | `kubectl get pod <pod> -n <ns> -o jsonpath={.metadata.name} --ignore-not-found` | `bool` | True if non-empty output |
-| `find_pod_by_label(ns, label)` | `kubectl get pods -n <ns> -l <label> -o jsonpath={.items[0].metadata.name}` | `str` | Returns first matching pod name, or empty string |
-| `collect(ns, pod)` | (orchestrates all of the above) | `RawEvidence` | The main entry point |
+### Make Targets
 
-#### Pod Name Auto-Resolution
+| Target | Recipe |
+|--------|--------|
+| `make install` | `pip install -e ./services/shared` + runtime requirements |
+| `make dev` | shared package + runtime + dev requirements |
+| `make test` | `test-services` + `test-root` (all 9 suites) |
+| `make test-services` | Loops `shared collector processor llm reports orchestrator gateway scenario`, running each service's pytest |
+| `make test-root` | `pytest tests -v` (root unit + integration) |
+| `make test-cov` | Coverage: `--cov=evaluation` at root, `--cov=app` per service |
+| `make lint` / `make format` | `ruff check . --extend-ignore E501` / `ruff check --fix . && ruff format .` |
+| `make up` / `make up-dev` / `make down` / `make logs` / `make build` | Compose lifecycle (dev = base + dev override, hot reload) |
+| `make e2e` | `scripts/e2e_smoke.sh` against the live stack |
+| `make eval ARGS="--classifier llm"` | `python -m evaluation.harness` |
+| `make run-scenario SCENARIO=05-oom` | `scripts/run_scenario.sh` |
+| `make frontend-install` / `frontend-build` / `frontend-types` | npm install / build / `openapi-typescript` generation |
+| `make clean` | Removes caches, `data/`, `__pycache__` |
+
+### Environment Variables
+
+The authoritative, per-service list is [`contracts/infra/.env.example`](../contracts/infra/.env.example); compose `environment:` keys must match it exactly. The most important:
+
+| Variable | Default | Service | Purpose |
+|----------|---------|---------|---------|
+| `LLM_PROVIDER` | `mock` | llm | `mock` \| `openai` \| `anthropic` \| `deepseek` |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` | — | llm | Required only for the selected provider |
+| `LLM_MODEL` | per-provider | llm | Override; defaults `gpt-4o-mini` / `claude-haiku-4-5-20251001` / `deepseek-chat` |
+| `LLM_MAX_TOKENS` | `2000` | llm | Completion cap |
+| `ORCHESTRATOR_URL` / `REPORTS_URL` / `SCENARIO_URL` / `LLM_URL` / `COLLECTOR_URL` | service DNS (:8001/:8005/:8006/:8004/:8002) | gateway | Upstream bases |
+| `RATE_LIMIT_PER_MINUTE` | `60` | gateway | Per-IP sliding-window limit |
+| `REDIS_URL` | `redis://redis:6379/0` | orchestrator | Job store |
+| `COLLECTOR_URL` / `PROCESSOR_URL` / `LLM_URL` / `REPORTS_URL` | service DNS | orchestrator | Pipeline stage bases |
+| `PIPELINE_TIMEOUT` | `120` (s) | orchestrator | Whole-job `asyncio.wait_for` cap |
+| `KUBECTL_TIMEOUT` | `30` (s) | collector, scenario | Per-kubectl-call timeout |
+| `MAX_LOG_LINES` / `CONTEXT_WINDOW` | `100` / `3` | processor | Filter caps |
+| `DATABASE_PATH` / `SCHEMA_PATH` | `/data/reports.db` / `/app/schema.sql` (Docker) | reports | SQLite location + DDL source |
+| `K8S_NAMESPACE` / `SCENARIOS_DIR` / `BASE_DIR` / `GROUND_TRUTH_DIR` | `demo`, `/k8s/scenarios`, `/k8s/base`, `/evaluation/ground_truth` | scenario | Fault injection config |
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8000` | frontend | Browser-visible gateway URL (**inlined at build time**) |
+| `INTERNAL_API_URL` | `http://gateway:8000` | frontend | SSR-side gateway URL |
+| `SERVICE_VERSION` / `LOG_LEVEL` | `0.1.0` / `INFO` | all | `/health` version; log verbosity |
+
+> **Quirk:** compose sets `KUBECTL_LOG_TAIL=500` for collector-svc, but the code never reads it — the tail is a hardcoded method default (`tail=500`). Listed in [Section 27](#27-limitations--future-roadmap).
+
+### Service Dockerfiles
+
+All seven Python services share one pattern (build context **must be the repo root**):
+
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+COPY services/shared /shared && pip install --no-cache-dir /shared   # the contract, baked in
+COPY services/<svc>/requirements.txt . && pip install --no-cache-dir -r requirements.txt
+COPY services/<svc>/app ./app
+ENV PYTHONUNBUFFERED=1
+EXPOSE <port>
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "<port>"]
+```
+
+Service-specific extras:
+
+- **collector + scenario** — install kubectl `v1.31.0` (linux/amd64 from `dl.k8s.io`, curl purged afterwards).
+- **reports** — also `COPY contracts/database/schema.sql /app/schema.sql`, `SCHEMA_PATH=/app/schema.sql`, `DATABASE_PATH=/data/reports.db`.
+- **scenario** — also bakes `k8s/scenarios → /k8s/scenarios`, `k8s/base → /k8s/base`, `evaluation/ground_truth → /evaluation/ground_truth` so it works in-cluster with no host mounts.
+- **frontend** — 4-stage `node:22-alpine`: `dev` (compose dev target) → `deps` (`npm ci`) → `builder` (`ARG NEXT_PUBLIC_API_URL`, `npm run build`, standalone output) → `runner` (non-root `nextjs` user, `ENV INTERNAL_API_URL`, `CMD ["node", "server.js"]`).
+- **demo-app** — plain `python:3.12-slim` uvicorn image.
+
+### Docker Compose Stack
+
+`docker-compose.yml` (mirrors `contracts/infra/docker-compose.yml`) defines 11 containers on one bridge network (`analyser-net`):
+
+| Container | Image | Ports | Notable wiring |
+|-----------|-------|-------|----------------|
+| frontend | `k8s-llm-frontend:latest` (built) | 3000:3000 | depends_on gateway (healthy) |
+| gateway | `k8s-llm-gateway-svc:latest` | 8000:8000 | upstream URLs + rate limit env |
+| orchestrator | `k8s-llm-orchestrator-svc:latest` | 8001:8001 | depends_on redis/collector/processor/llm/reports (all healthy) |
+| collector | `k8s-llm-collector-svc:latest` | 8002:8002 | mounts `~/.kube/config` + `~/.minikube` (ro) |
+| processor | `k8s-llm-processor-svc:latest` | 8003:8003 | — |
+| llm | `k8s-llm-llm-svc:latest` | 8004:8004 | provider + keys from `.env` interpolation |
+| reports | `k8s-llm-reports-svc:latest` | 8005:8005 | bind mount `./data:/data` (SQLite persistence) |
+| scenario | `k8s-llm-scenario-svc:latest` | 8006:8006 | kubeconfig + `./k8s:/k8s:ro` + `./evaluation:/evaluation:ro` |
+| redis | `redis:7-alpine` | 6379:6379 | `--appendonly yes --maxmemory-policy allkeys-lru`, volume `analyser-redis-data` |
+| demo-app | `k8s-demo-app:latest` | 8080:8000 | target workload, **not platform** |
+| db | `postgres:16-alpine` | — | demo-app's database, **not platform** |
+
+Every Python service has a uniform urllib-based `/health` healthcheck (interval 30s, timeout 5s, retries 3). `docker-compose.dev.yml` overlays read-only source bind mounts + `uvicorn --reload` + `LOG_LEVEL=DEBUG` for every Python service, and the frontend `dev` stage with HMR (`./frontend:/app` plus anonymous `/app/node_modules`, `/app/.next`).
+
+---
+
+## 7. Service Conventions & Bootstrap
+
+Every service is a FastAPI application created in `app/main.py` with the same wiring, which the shared kernel makes uniform:
+
+1. **`add_error_handlers(app)`** — three exception handlers:
+   - `HTTPException` → `ProblemDetail` with a default title map (`400 Bad request`, `404 Not found`, `409 Conflict`, `429 Rate limit exceeded`, `500 Internal server error`, `502 Upstream service error`, `503 Service unavailable`),
+   - `RequestValidationError` → 400 "Invalid request" with `"<loc>: <msg>"` detail,
+   - catch-all `Exception` → 500 `https://errors.k8s-llm.io/internal`.
+   Responses use media type `application/problem+json`.
+2. **`GET /health`** — `health_payload("<name>-svc", ...)`, version from `SERVICE_VERSION` (default `0.1.0`); services with something extra to report add it (`llm` → provider+model; `collector`/`scenario` → `cluster: connected|unreachable`; gateway aggregates both).
+3. **Lifespan-managed clients** — services that make outbound calls construct them in the FastAPI lifespan and hang them on `app.state` (`gateway`: `httpx.AsyncClient`; `orchestrator`: `redis.asyncio` client + `httpx.AsyncClient`). Stateless services (`collector`, `processor`, `llm`, `reports`) construct module-level singletons instead — the collector's `KubernetesCollector`, the processor's `LogPreprocessor`/`LogRedactor`, reports' `ReportsDB` (schema applied at startup), scenario's `lru_cache`d `ScenarioManager`.
+4. **Structured logging** via structlog; level from `LOG_LEVEL`.
+5. **uvicorn entrypoint** `app.main:app` on the contractual port (gateway 8000 … scenario 8006; ports are part of the contract and must match OpenAPI `servers:` URLs).
+
+Bootstrap order matters only in Compose, where `depends_on: service_healthy` chains encode it: redis/db first → pipeline services → orchestrator → gateway → frontend.
+
+---
+
+## 8. Public API Surface (gateway-svc)
+
+The gateway owns no domain logic — it reverse-proxies, byte-for-byte, to internal services. Bodies, query strings, status codes, and `application/problem+json` errors pass through unchanged; upstream timeouts/transport errors are translated to 502 "Upstream service error".
+
+### Endpoint Reference
+
+| Method | Path | Proxied to | Purpose |
+|--------|------|-----------|---------|
+| GET | `/health` | (aggregated) | Gateway health + `provider` (from llm-svc) + `cluster` (from collector-svc) |
+| POST | `/api/jobs` | orchestrator `POST /jobs` | Create analysis job → **202** `JobCreated` |
+| GET | `/api/jobs` | orchestrator `GET /jobs` | List jobs (`status`, `limit` 1–100/20, `offset`) |
+| GET | `/api/jobs/{job_id}` | orchestrator `GET /jobs/{id}` | Single `JobState` (404 "Job not found") |
+| GET | `/api/jobs/{job_id}/stream` | orchestrator `GET /jobs/{id}/stream` | **SSE event stream** (below) |
+| GET | `/api/reports` | reports `GET /reports` | List `ReportSummary` (`namespace`, `pod_name`, `category`, `severity`, paging) |
+| GET | `/api/reports/{incident_id}` | reports `GET /reports/{id}` | Full `IncidentReport` (404 "Report not found") |
+| GET | `/api/stats` | reports `GET /stats` | Dashboard stats (`range` = `24h`/`7d`/`30d`, default `7d`) |
+| GET | `/api/scenarios` | scenario `GET /scenarios` | Catalogue of 10 fault scenarios |
+| POST | `/api/scenarios/{scenario_id}/apply` | scenario `POST …/apply` | Inject a fault (404 unknown / **409 one already active** / 503 cluster unreachable) |
+| POST | `/api/scenarios/reset` | scenario `POST /scenarios/reset` | Restore the healthy baseline |
+
+Cross-cutting middleware:
+
+- **CORS** — `allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]` (v1 is open; see limitations).
+- **Rate limiting** — `RateLimitMiddleware`: per-IP deque over a 60-second sliding window (`time.monotonic()`), default 60 req/min (`RATE_LIMIT_PER_MINUTE`); `/health` and `OPTIONS` exempt; over-limit → 429 ProblemDetail "Rate limit exceeded".
+
+### `POST /api/jobs` — start an analysis
+
+```bash
+curl -X POST http://localhost:8000/api/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"namespace": "demo", "pod_name": "demo-app"}'
+# 202 Accepted
+{"job_id": "01938a7b-…", "status": "queued"}
+```
+
+`namespace` defaults to `"demo"`. `pod_name` may be an exact pod name or a workload name — collector-svc falls back to the label selector `app={pod_name}`. The pipeline runs in the background; progress arrives over SSE.
+
+### `GET /api/jobs/{job_id}/stream` — Server-Sent Events
+
+Content type `text/event-stream`, with anti-buffering headers (`Cache-Control: no-cache`, `X-Accel-Buffering: no`, `Connection: keep-alive`). Three named events:
+
+```
+event: stage
+data: {"event":"stage","job_id":"01938a7b-…","status":"collecting","stage":"Collecting evidence for demo/demo-app","updated_at":"2026-07-22T04:10:05Z"}
+
+event: done
+data: {"event":"done","job_id":"01938a7b-…","status":"done","incident_id":"01938a7c-…","failure_category":"config","severity":"critical","latency_ms":6312}
+
+event: failed
+data: {"event":"failed","job_id":"01938a7b-…","status":"failed","error":"llm-svc timed out after 60s","latency_ms":60120}
+```
+
+Late subscribers get the current state replayed first (see [Section 10](#10-orchestrator-job-state-machine--pipeline)). The stream closes after the terminal event.
+
+### OpenAPI Schema
+
+The machine-readable spec is [`contracts/api/gateway.yaml`](../contracts/api/gateway.yaml) (OpenAPI 3.1) — also the **schema hub** holding every shared component schema; the other six specs cross-reference it via relative `$ref`. The frontend's TypeScript types are generated from it ([Section 18](#18-frontend-nextjs-dashboard)).
+
+---
+
+## 9. Internal APIs
+
+These services are reachable only inside the platform network. Full specs: `contracts/api/*.yaml`.
+
+### orchestrator-svc (:8001)
+
+| Method | Path | Request → Response | Notes |
+|--------|------|--------------------|-------|
+| GET | `/health` | → health | |
+| POST | `/jobs` | `AnalysisRequest` → 202 `JobCreated` | Creates Redis state, archives snapshot (best-effort), launches background pipeline task |
+| GET | `/jobs` | `status?, limit, offset` → `{items: JobState[], count, limit, offset}` | Backed by Redis SCAN (see §10) |
+| GET | `/jobs/{job_id}` | → `JobState` / 404 | Redis hash read |
+| GET | `/jobs/{job_id}/stream` | → SSE | Replay + Redis pub/sub fanout |
+
+### collector-svc (:8002)
+
+| Method | Path | Request → Response | Notes |
+|--------|------|--------------------|-------|
+| GET | `/health` | → health + `cluster` | Runs `kubectl version --client=false` (timeout 5) |
+| POST | `/collect` | `AnalysisRequest` → `RawEvidence` | 500 if kubectl binary missing or collection raises |
+
+### processor-svc (:8003)
+
+| Method | Path | Request → Response | Notes |
+|--------|------|--------------------|-------|
+| GET | `/health` | → health | |
+| POST | `/process` | `RawEvidence` → `EvidencePackage` | Filter then redact; 500 "Processing failed: …" on exception |
+
+### llm-svc (:8004)
+
+| Method | Path | Request → Response | Notes |
+|--------|------|--------------------|-------|
+| GET | `/health` | → health + `provider`, `model` | Provider from `LLM_PROVIDER` env |
+| GET | `/providers` | → `{items: ProviderInfo[4]}` | Order `mock, deepseek, openai, anthropic`; `available` = API key configured |
+| POST | `/analyse` | `EvidencePackage` → `IncidentReport` | 500 "Analysis failed: …" (API errors, truncation, content filter, validation) |
+
+### reports-svc (:8005)
+
+| Method | Path | Request → Response | Notes |
+|--------|------|--------------------|-------|
+| GET | `/health` | → health | |
+| POST | `/reports` | `SaveReportRequest` → 201 `{incident_id}` | Single locked transaction; also links `analysis_jobs.incident_id` |
+| GET | `/reports` | filters → `{items: ReportSummary[], count, …}` | `ORDER BY created_at DESC` |
+| GET | `/reports/{incident_id}` | → full report JSON / 404 | Parsed from the `report_json` column |
+| POST | `/jobs` | `SaveJobRequest` → 201 `{job_id}` | Upsert (durable job snapshot) |
+| GET | `/jobs` | `status?, limit, offset` → `{items: JobState[], …}` | Archived jobs |
+| GET | `/stats` | `range` (`24h`/`7d`/`30d`, regex-validated) → `StatsResponse` | 400 on bad range |
+
+### scenario-svc (:8006)
+
+| Method | Path | Response | Notes |
+|--------|------|----------|-------|
+| GET | `/health` | health + `cluster` | kubectl connectivity check |
+| GET | `/scenarios` | `{items: ScenarioSummary[]}` | From filesystem (`k8s/scenarios/*/fault.yaml`) enriched by ground truth |
+| POST | `/scenarios/{id}/apply` | `{applied, scenario_id, fault_description}` | 503 pre-check if cluster unreachable; 404 / **409** / 500 taxonomy |
+| POST | `/scenarios/reset` | `{reset: true}` | delete → apply base → `rollout status` (120s) |
+
+---
+
+## 10. Orchestrator: Job State Machine & Pipeline
+
+The orchestrator (`app/main.py`, `app/pipeline.py`, `app/store.py`) is the platform's brain.
+
+### The 7-State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued
+    queued --> collecting
+    collecting --> processing
+    processing --> llm_call
+    llm_call --> persisting
+    persisting --> done
+    queued --> failed
+    collecting --> failed
+    processing --> failed
+    llm_call --> failed
+    persisting --> failed
+    done --> [*]
+    failed --> [*]
+```
+
+`TERMINAL_STATUSES = ("done", "failed")`. Every transition writes the Redis hash **and** publishes an event — SSE is therefore a pure function of the state machine.
+
+### Job Creation (`POST /jobs`)
+
+1. `job_id = new_id()` (UUIDv7).
+2. `store.create(...)`: `HSET job:{job_id}` (status `queued`, namespace, pod_name, timestamps) with **TTL 86400 s (24 h)**; `LPUSH job:queue {job_id}`.
+3. Best-effort archival: `POST {reports}/jobs` with `SaveJobRequest(status="queued")` (timeout 10 s; failure is logged, never fatal).
+4. `202 {job_id, status: "queued"}` is returned **immediately**; the pipeline runs as `asyncio.create_task(_run_with_timeout())` wrapped in `asyncio.wait_for(..., PIPELINE_TIMEOUT=120)`.
+
+### The Four Pipeline Hops (`Pipeline.run`)
+
+| # | Transition (status, stage label) | Call (timeout) | Result |
+|---|----------------------------------|----------------|--------|
+| 1 | `collecting`, "Collecting evidence for {ns}/{pod}" | `POST {collector}/collect` (60 s) | `RawEvidence` |
+| 2 | `processing`, "Filtering logs and redacting secrets" | `POST {processor}/process` (30 s) | `EvidencePackage` |
+| 3 | `llm_call`, dynamic label | `POST {llm}/analyse` (60 s) | `IncidentReport` |
+| 4 | `persisting`, "Saving report" | `POST {reports}/reports` (30 s) | `incident_id` |
+| 5 | `done` | `store.complete(job_id, incident_id, latency_ms, report)` + archive | terminal |
+
+The stage-3 label is dynamic: `_llm_stage_label()` fetches `GET {llm}/health` (timeout 5) and produces "Calling {provider} {model}" → e.g. *"Calling deepseek deepseek-chat"* — this is the text the dashboard's live timeline shows.
+
+On success, `complete()` embeds the report's `failure_category` and `severity` into the `SseDoneEvent` and archives `SaveJobRequest(status="done", incident_id, latency_ms)`.
+
+### Pipeline Stage Detail
+
+Each of the four pipeline hops encapsulates significant internal work. This flowchart shows what the orchestrator triggers at each stage:
+
+```mermaid
+flowchart LR
+    %% Stage 1 — collect
+    POST["POST /jobs"] --> S1["Stage 1: collector-svc<br>POST /collect · timeout 60"]
+    S1 --> S1a["kubectl logs<br>--tail=500 --timestamps=true"]
+    S1 --> S1b["kubectl logs --previous"]
+    S1 --> S1c["kubectl describe pod"]
+    S1 --> S1d["kubectl get events"]
+    S1 --> S1e["jsonpath restartCount"]
+    S1 --> S1f["jsonpath containerStates"]
+    S1 --> S1g["find_pod_by_label()<br>if exact name missing"]
+    S1a --> RAW["RawEvidence<br>(namespace, pod, logs,<br>prev_logs, status, events,<br>restart_count, container_states)"]
+    S1b --> RAW
+    S1c --> RAW
+    S1d --> RAW
+    S1e --> RAW
+    S1f --> RAW
+    S1g --> RAW
+
+    RAW --> S2["Stage 2: processor-svc<br>POST /process · timeout 30"]
+    S2 --> S2a["filter noise<br>(health/ready/metrics/<br>blank lines)"]
+    S2 --> S2b["keep signal lines<br>(error/exception/oom/<br>k8s failure states)"]
+    S2 --> S2c["add context window<br>±3 lines around signal"]
+    S2 --> S2d["deduplicate"]
+    S2 --> S2e["cap at 100 lines"]
+    S2 --> S2f["extract warning events"]
+    S2a --> PKG
+    S2b --> PKG
+    S2c --> PKG
+    S2d --> PKG
+    S2e --> PKG
+    S2f --> PKG["EvidencePackage<br>(filtered, deduped, redacted)"]
+
+    PKG --> S3["Stage 3: llm-svc<br>POST /analyse · timeout 60"]
+    S3 --> S3a["build_prompt()<br>system rules + evidence<br>+ JSON Schema"]
+    S3 --> S3b["get_provider()<br>reads LLM_PROVIDER"]
+    S3b --> S3c["OpenAI<br>chat.completions.parse()"]
+    S3b --> S3d["Anthropic<br>messages.parse()"]
+    S3b --> S3e["DeepSeek<br>httpx POST json_object"]
+    S3b --> S3f["Mock<br>heuristic classify"]
+    S3c --> REP
+    S3d --> REP
+    S3e --> REP
+    S3f --> REP["IncidentReport<br>(Pydantic, structured)"]
+
+    REP --> S4["Stage 4: reports-svc<br>POST /reports · timeout 30"]
+    S4 --> S4a["INSERT incidents<br>+ UPDATE analysis_jobs<br>(single locked transaction)"]
+    S4a --> DONE["job_id + incident_id + latency_ms<br>→ SSE done event + archive"]
+```
+
+### Why Not One Big Prompt
+
+A naive approach would shovel raw `kubectl logs` output into an LLM and ask for a diagnosis. The multi-stage pipeline exists for four reasons:
+
+1. **Token economics** — Raw logs for a chatty pod can exceed 50,000 tokens. The preprocessor typically reduces this to under 2,000 tokens, a 25× reduction that directly cuts API spend.
+2. **Secret hygiene** — Logs routinely contain database URLs with credentials, bearer tokens, and API keys. The redactor masks these *before* the evidence leaves the platform. This is a non-negotiable control for any production deployment.
+3. **Determinism before nondeterminism** — Stages 1–2 (collect, process) are deterministic Python. Only Stage 3 is LLM-driven. This means regressions in collection or preprocessing are caught by unit tests, not by LLM non-determinism.
+4. **Provider portability** — Stages 1, 2, and 4 are provider-agnostic. Switching from OpenAI to DeepSeek is a one-line env change. The prompt schema and evidence format are identical across all providers.
+
+### Error Handling
+
+- **Any stage exception** → `store.fail(job_id, error[:500], latency_ms)` + publish `SseFailedEvent` + archive `SaveJobRequest(status="failed", …)`. Archival is always best-effort: a reports-svc outage degrades durability, never the job outcome.
+- **Downstream error taxonomy** (`_post`): timeout → `"{stage}-svc timed out after {t}s"`; transport → `"{stage}-svc unreachable: {e}"`; non-2xx → `"{stage}-svc returned {status}: {body[:300]}"`.
+- **Whole-job timeout** — `asyncio.TimeoutError` → `fail(job_id, "Pipeline exceeded 120s", 0)`.
+
+The pipeline is wrapped in `asyncio.wait_for` with a configurable cap. The orchestrator's `_run_with_timeout` and the pipeline's `_post` helper form the error boundary:
+
+```python
+# services/orchestrator/app/main.py — job creation spawns a background task
+asyncio.create_task(_run_with_timeout(job_id, namespace, pod_name))
+
+# services/orchestrator/app/pipeline.py — core execution with per-stage wrappers
+async def run(self, job_id: str, namespace: str, pod_name: str, ...) -> None:
+    store = self._store
+    t0 = time.monotonic()
+    try:
+        # Stage 1 — collect (wrap with transition + err)
+        raw = await self._post(self._collector_url, "/collect",
+                               {"namespace": namespace, "pod_name": pod_name},
+                               stage="collecting", timeout=60)
+
+        # Stage 2 — process
+        pkg = await self._post(self._processor_url, "/process",
+                               raw.model_dump(), stage="processing", timeout=30)
+
+        # Stage 3 — llm (dynamic label from /health)
+        report = await self._post(self._llm_url, "/analyse",
+                                   pkg.model_dump(), stage="llm_call", timeout=60)
+
+        # Stage 4 — persist + complete
+        resp = await self._post(self._reports_url, "/reports",
+                                {"report": report.model_dump(), "namespace": namespace,
+                                 "pod_name": pod_name, "job_id": job_id},
+                                stage="persisting", timeout=30)
+        incident_id = resp["incident_id"]
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        await store.complete(job_id, incident_id, latency_ms, report)
+
+    except Exception as e:
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        await store.fail(job_id, str(e)[:500], latency_ms)
+
+# _post wraps per-stage error taxonomy:
+#   timeout   → "{stage}-svc timed out after {t}s"
+#   transport → "{stage}-svc unreachable: {e}"
+#   non-2xx   → "{stage}-svc returned {status}: {body[:300]}"
+```
+
+Report archival (best-effort `POST /jobs`) runs alongside the pipeline transitions but its failure is logged, never fatal — a down reports-svc degrades durability, not job outcomes.
+
+### Redis Store (`app/store.py`)
+
+| Key | Type | TTL | Contents |
+|-----|------|-----|----------|
+| `job:{job_id}` | Hash | 24 h | `job_id`, `namespace`, `pod_name`, `status`, `stage`, `incident_id`, `latency_ms`, `error`, `created_at`, `updated_at` (subset per transition; empty strings ↔ None) |
+| `job:queue` | List | none | `LPUSH` on create. **Nothing consumes it in v1** — it exists so v2 worker scaling (BRPOP consumers) needs no contract change |
+| `job:{job_id}:events` | Pub/Sub channel | ephemeral | Every transition publishes the JSON dump of `SseStageEvent` / `SseDoneEvent` / `SseFailedEvent` |
+
+`GET /jobs` listing: `SCAN match="job:*"` filtered by regex `^job:[0-9a-fA-F-]{36}$` (excludes `job:queue` and `*:events`), `HGETALL` each, sorted by `created_at` desc, optional `status` filter, then `[offset:offset+limit]` with total count.
+
+### SSE Streaming (`GET /jobs/{job_id}/stream`)
+
+- Job already terminal → exactly one `done`/`failed` event, then close. (The replayed terminal event carries `incident_id`/`error` + `latency_ms`, but omits the `failure_category`/`severity` that the live `SseDoneEvent` has — the frontend treats them as optional.)
+- Otherwise → a replay `stage` event from the current hash (`stage` may be `""` for a queued job), then `SUBSCRIBE job:{job_id}:events`; messages are polled with `pubsub.get_message(timeout=1.0)` interleaved with `request.is_disconnected()` checks; each payload is forwarded as `event: <type>\ndata: <json>\n\n` until a terminal event, then the stream closes.
+
+Redis gives multi-client fanout for free: N SSE clients = N subscriptions to the same channel; the orchestrator publishes once.
+
+---
+
+## 11. Evidence Collection (collector-svc)
+
+`app/collector.py` — `KubernetesCollector(kubectl_path="kubectl", timeout=30)`. Stateless; no database, no Redis.
+
+### kubectl Commands Executed
+
+| # | Purpose | Command |
+|---|---------|---------|
+| 1 | Connectivity | `kubectl version --client=false` (timeout 5) |
+| 2 | Current logs | `kubectl logs -n {ns} {pod} --tail=500 --timestamps=true` |
+| 3 | Previous logs | `kubectl logs -n {ns} {pod} --tail=500 --timestamps=true --previous` |
+| 4 | Pod description | `kubectl describe pod -n {ns} {pod}` |
+| 5 | Events | `kubectl get events -n {ns} --sort-by=.metadata.creationTimestamp` |
+| 6 | Restart count | `kubectl get pod -n {ns} {pod} -o jsonpath={.status.containerStatuses[0].restartCount}` |
+| 7 | Container states | `kubectl get pod -n {ns} {pod} -o jsonpath={.status.containerStatuses}` (JSON-parsed) |
+| 8 | Pod exists? | `kubectl get pod -n {ns} {pod} -o jsonpath={.metadata.name} --ignore-not-found` |
+| 9 | Label fallback | `kubectl get pods -n {ns} -l app={pod_name} -o jsonpath={.items[0].metadata.name}` |
+
+Every call goes through `_run`: `subprocess.run(..., capture_output=True, text=True, timeout=self.timeout, check=False)` → `stdout.strip()`; `TimeoutExpired` → `""`; non-zero exit logs a warning (stderr truncated to 200 chars) and still returns stdout. **Failed probes degrade to empty strings, never exceptions** — the pipeline analyses whatever evidence exists.
+
+### Pod Name Auto-Resolution
 
 A critical real-world feature: users typically know a deployment name (`demo-app`) but not the full pod name (`demo-app-bd594d4bd-87nhj`). The collector handles this transparently:
 
 ```python
+# services/collector/app/collector.py — collect() with auto-resolution
 def collect(self, namespace: str, pod_name: str) -> RawEvidence:
-    logger.info("Collecting evidence for %s/%s", namespace, pod_name)
     actual_pod = pod_name
     if not self._pod_exists(namespace, pod_name):
         resolved = self.find_pod_by_label(namespace, f"app={pod_name}")
         if resolved:
-            logger.info("Resolved %s -> %s", pod_name, resolved)
             actual_pod = resolved
-    ev = RawEvidence(namespace=namespace, pod_name=actual_pod)
-    ev.current_logs = self.get_pod_logs(namespace, actual_pod, previous=False)
-    ev.previous_logs = self.get_pod_logs(namespace, actual_pod, previous=True)
-    ev.pod_status = self.get_pod_description(namespace, actual_pod)
-    ev.k8s_events = self.get_events(namespace)
-    ev.restart_count = self.get_restart_count(namespace, actual_pod)
-    ev.container_states = self.get_container_states(namespace, actual_pod)
-    return ev
+    return RawEvidence(
+        namespace=namespace,
+        pod_name=actual_pod,
+        current_logs=self._get_logs(namespace, actual_pod, previous=False),
+        previous_logs=self._get_logs(namespace, actual_pod, previous=True),
+        pod_status=self._get_pod_description(namespace, actual_pod),
+        k8s_events=self._get_events(namespace),
+        restart_count=self._get_restart_count(namespace, actual_pod),
+        container_states=self._get_container_states(namespace, actual_pod),
+    )
 ```
 
-Note: if the exact pod name is not found and label resolution also fails, the collector proceeds with the original name — the subsequent `kubectl logs` call will return empty strings, which the preprocessor handles gracefully.
+If the exact pod name is not found and label resolution also fails, the collector proceeds with the original name — subsequent kubectl calls return empty strings, which the preprocessor handles gracefully.
 
-#### `RawEvidence` Fields
+### `RawEvidence` Fields (never leaves the platform)
 
 | Field | Source | Type | Typical Size |
 |-------|--------|------|-------------|
-| `namespace` | input | `str` | 5–20 chars |
-| `pod_name` | input or resolved | `str` | 20–40 chars |
+| `namespace` | request input | `str` | 5–20 chars |
+| `pod_name` | request input or resolved | `str` | 20–40 chars |
 | `current_logs` | `kubectl logs --tail=500 --timestamps=true` | `str` | 1–10 KB |
 | `previous_logs` | `kubectl logs --previous --tail=500 --timestamps=true` | `str` | 0–10 KB (empty if no previous container) |
 | `pod_status` | `kubectl describe pod` | `str` | 3–8 KB |
 | `k8s_events` | `kubectl get events --sort-by=...` | `str` | 0.5–3 KB |
 | `restart_count` | `jsonpath={.status.containerStatuses[0].restartCount}` | `int` | integer |
-| `container_states` | `jsonpath={.status.containerStatuses}` | `dict` | parsed JSON |
+| `container_states` | `jsonpath={.status.containerStatuses}` | `list[dict]` | parsed JSON |
 
 ---
 
-## 11. Preprocessing & Noise Filtering
+## 12. Preprocessing & Noise Filtering (processor-svc)
 
-### `LogPreprocessor` Deep Dive
+`app/preprocessor.py` — `LogPreprocessor(max_log_lines=100, context_window=3)`. Pure CPU, sub-50 ms.
 
-`app/core/preprocessor.py:1-86` — the goal is to reduce 10,000 lines of raw logs to under 100 lines of signal-bearing text, preserving context.
+### Noise Patterns (discarded)
 
-#### Noise Patterns (Discarded)
+4 case-sensitive patterns: `\bGET /health\b`, `\bGET /ready\b`, `\bGET /metrics\b`, `^\s*$` (blank lines).
 
-| Pattern | Regex | Why it's noise |
-|---------|-------|---------------|
-| Health probes | `GET /health` | Liveness/readiness checks; appear every 5 s |
-| Readiness probes | `GET /ready` | Same as above |
-| Metrics scrapes | `GET /metrics` | Prometheus scrapes; every 15 s |
-| Blank lines | `^\s*$` | Formatting only |
+### Signal Patterns (kept, with context)
 
-#### Signal Patterns (Kept + Context)
+| Pattern | Flags | Catches |
+|---------|-------|---------|
+| `\b(error\|exception\|traceback\|fatal\|critical\|failed\|refused\|timeout)\b` | IGNORECASE | Generic application failures |
+| `\b(OOMKilled\|CrashLoopBackOff\|ImagePullBackOff\|BackOff\|Unhealthy)\b` | case-sensitive | Kubernetes failure states |
+| `\b(missing\|not found\|permission denied\|address already in use)\b` | IGNORECASE | Config/network failures |
 
-| Pattern | Regex | Why it's signal |
-|---------|-------|-----------------|
-| Errors/exceptions | `(?i)\b(error|exception|traceback|fatal|critical|failed|refused|timeout)\b` | Explicit error markers |
-| K8s failure states | `\b(OOMKilled|CrashLoopBackOff|ImagePullBackOff|BackOff|Unhealthy)\b` | Kubernetes failure reasons (case-sensitive) |
-| Missing/not found | `(?i)\b(missing|not found|permission denied|address already in use)\b` | Config/path errors |
+### Filtering Algorithm
 
-#### Context Window
+`_filter_with_context(text)`:
+1. For every line index `i` where the line is **signal and not noise**, mark indices `[i-3, i+3]` (the context window) as kept.
+2. Emit kept lines in order, skipping lines whose stripped form is empty **or already seen** (dedup by stripped text).
+3. Truncate to the first `max_log_lines` (100) lines.
 
-For each signal line, the preprocessor includes **3 lines before and 3 lines after** (`context_window=3`). This is critical because the signal line itself (e.g. `RuntimeError: Missing required configuration`) is often preceded by a stack frame (`File "app/main.py", line 42, in lifespan`) that gives the LLM enough context to identify the component.
+`_extract_events(text)`: keeps event lines containing the substring `"Warning"` **or** matching any signal pattern.
 
-#### Post-Processing
+`process(RawEvidence) -> EvidencePackage`:
 
-| Step | Limit | Rationale |
-|------|-------|-----------|
-| Deduplication | exact-match | Probe retries produce identical lines |
-| Line cap | `max_log_lines=100` | Hard token-budget ceiling |
-| Event extraction | Warning events + signal-matching events | `kubectl get events` output is also noisy; only keep warnings |
+| EvidencePackage field | Value |
+|-----------------------|-------|
+| `current_logs` / `previous_logs` | filtered as above |
+| `pod_status_summary` | `pod_status[:2000]` (hard truncation) |
+| `k8s_events_filtered` | `_extract_events` output |
+| `namespace`, `pod_name`, `restart_count` | passthrough |
 
-#### `EvidencePackage` Construction
+`container_states` is dropped here — it informed collection but is not part of the LLM contract.
 
-`_filter_with_context` returns a **string** (lines joined by `\n`), not a list. The truncation to `max_log_lines` happens inside `_filter_with_context`, not on the `EvidencePackage` fields.
+---
 
-```python
-def process(self, evidence: RawEvidence) -> EvidencePackage:
-    return EvidencePackage(
-        namespace=evidence.namespace,
-        pod_name=evidence.pod_name,
-        current_logs=self._filter_with_context(evidence.current_logs),
-        previous_logs=self._filter_with_context(evidence.previous_logs),
-        pod_status_summary=evidence.pod_status[:2000],  # truncate long describe output
-        k8s_events_filtered=self._extract_events(evidence.k8s_events),
-        restart_count=evidence.restart_count,
-    )
+## 13. Secret Redaction (processor-svc)
+
+`app/redactor.py` — `LogRedactor`, applied **in the same `/process` call, after filtering**. Nothing un-redacted ever reaches llm-svc or a vendor.
+
+### Redaction Patterns (7, applied in order to all four text fields)
+
+| # | Matches | Replacement |
+|---|---------|-------------|
+| 1 | `password`/`passwd`/`pwd` `=` or `:` value | `[PASSWORD=REDACTED]` |
+| 2 | `api_key`/`apikey`/`token`/`secret` + 8+ char value | `[API_KEY=REDACTED]` |
+| 3 | `sk-ant-…` (20+ chars) | `[ANTHROPIC_KEY=REDACTED]` |
+| 4 | `sk-…` (20+ chars) | `[OPENAI_KEY=REDACTED]` |
+| 5 | `postgres://` `mysql://` `mongodb://` `redis://` URLs | `[DB_URL=REDACTED]` |
+| 6 | `Authorization:`/`Bearer` + 20+ char token | `[AUTH_HEADER=REDACTED]` |
+| 7 | Email addresses | `[EMAIL=REDACTED]` |
+
+Pattern ordering matters: the Anthropic pattern (3) runs before the generic OpenAI `sk-` pattern (4) so `sk-ant-…` keys get the more specific tag. Substitution is done via `model_copy(update=...)` on the `EvidencePackage` — the package stays a validated Pydantic object end to end.
+
+### What is NOT Redacted
+
+Pod names, namespaces, container names, file paths, exit codes, IP addresses, and non-secret error text — all required for diagnosis. Redaction targets *credentials*, not *context*; over-redaction would destroy the signal the LLM needs.
+
+---
+
+## 14. Prompt Engineering (llm-svc)
+
+`app/prompts.py` — `build_prompt(package) -> (system, user)`.
+
+### System Prompt Rules
+
+The system prompt ("You are a Kubernetes incident analyst…") carries five hard rules:
+
+1. Use **only** the provided evidence — no outside assumptions.
+2. **Never invent log lines** or events not present in the evidence.
+3. Lower `confidence` when evidence is ambiguous.
+4. **Never recommend automated remediation** — only human-verifiable steps.
+5. Respond **only** with valid JSON matching the provided schema.
+
+### User Prompt Template
+
+```
+=== KUBERNETES DIAGNOSTIC EVIDENCE ===
+Namespace: {namespace}
+Target: {pod_name}
+Collection Time: {current UTC ISO}
+
+--- POD STATUS ---
+{pod_status_summary | "(no pod status available)"}
+
+--- APPLICATION LOGS (current) ---
+{current_logs | "(no current logs)"}
+
+--- APPLICATION LOGS (previous container, if available) ---
+{previous_logs | "(no previous logs)"}
+
+--- KUBERNETES EVENTS ---
+{k8s_events_filtered | "(no kubernetes events)"}
+
+--- RESTART COUNT ---
+{restart_count}
+
+=== REQUIRED OUTPUT SCHEMA ===
+{json.dumps(IncidentReport.model_json_schema(), indent=2)}
 ```
 
-Note: `EvidencePackage` does **not** carry `container_states` or a `timestamp` — those fields exist only on `RawEvidence`. The timestamp is generated at prompt-build time in `prompts.py` via `datetime.now(timezone.utc).isoformat()`.
+### Schema Injection
+
+The full Pydantic JSON schema is embedded in the prompt — the LLM sees the exact contract, including enum values and the `supporting_evidence` min-items constraint. For OpenAI/Anthropic this is belt-and-braces on top of native structured-output APIs; for DeepSeek (JSON-object mode) it is the *only* enforcement mechanism, augmented with a hardcoded example object ([Section 15](#15-llm-provider-layer-llm-svc)).
 
 ---
 
-## 12. Secret Redaction
-
-### `LogRedactor` Deep Dive
-
-`app/core/redactor.py:1-32` — masks seven categories of secrets before evidence leaves the container. Redaction is a non-negotiable control; an unredacted database URL with credentials, sent to an LLM vendor, is a security incident.
-
-#### Redaction Patterns
-
-| # | Category | Regex (simplified) | Replacement | Example Input → Output |
-|---|----------|-------------------|-------------|------------------------|
-| 1 | Password | `(?i)(password\|passwd\|pwd)\s*[=:]\s*[\S]+` | `[PASSWORD=REDACTED]` | `password=hunter2` → `[PASSWORD=REDACTED]` |
-| 2 | Generic API key / token / secret | `(?i)(api[_-]?key\|apikey\|token\|secret)[\s=:\"]+[A-Za-z0-9+/=_\-]{8,}` | `[API_KEY=REDACTED]` | `api_key=abcdefgh` → `[API_KEY=REDACTED]` |
-| 3 | Anthropic API key | `sk-ant-[A-Za-z0-9_\-]{20,}` | `[ANTHROPIC_KEY=REDACTED]` | `sk-ant-api03-xyz...` → `[ANTHROPIC_KEY=REDACTED]` |
-| 4 | OpenAI API key | `sk-[A-Za-z0-9_\-]{20,}` | `[OPENAI_KEY=REDACTED]` | `sk-proj-abc123...` → `[OPENAI_KEY=REDACTED]` |
-| 5 | Database URL | `(postgres\|mysql\|mongodb\|redis)://[^\s'\"]+` | `[DB_URL=REDACTED]` | `postgresql://user:pass@host` → `[DB_URL=REDACTED]` |
-| 6 | Auth header | `(?i)(Authorization\|Bearer)\s+[A-Za-z0-9+/=]{20,}` | `[AUTH_HEADER=REDACTED]` | `Authorization: Bearer eyJ...` → `[AUTH_HEADER=REDACTED]` |
-| 7 | Email | `[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}` | `[EMAIL=REDACTED]` | `admin@corp.com` → `[EMAIL=REDACTED]` |
-
-#### Pattern Ordering
-
-Patterns are applied **in list order** (1 → 7). The Anthropic pattern (#3, `sk-ant-...`) is applied **before** the OpenAI pattern (#4, `sk-...`) because Anthropic keys are a strict prefix superset of OpenAI keys. If OpenAI ran first, it would mask `sk-` and leave `ant-api03-xyz...` exposed. The password pattern (#1) runs first so that `password=` assignments are masked before any subsequent pattern can leak the value.
-
-#### What is NOT Redacted
-
-- **Pod names, namespaces, container names** — these are operational metadata, not secrets, and the LLM needs them for diagnosis.
-- **Log timestamps** — needed for temporal reasoning.
-- **Kubernetes event reasons** (`OOMKilled`, `CrashLoopBackOff`) — these are k8s enums, not secrets.
-- **IP addresses** — treated as operational metadata. A future hardening pass could mask these for stricter environments.
-
----
-
-## 13. Prompt Engineering
-
-### `prompts.py` Deep Dive
-
-`app/core/prompts.py:1-64` — builds the `(system, user)` prompt tuple that is sent to the LLM provider.
-
-#### System Prompt Rules
-
-The system prompt (`SYSTEM_PROMPT` in `prompts.py`) encodes five rules that constrain the LLM's behaviour. The exact text:
-
-1. **"Only use evidence that is present in the provided data."** — no hallucinated log lines or events.
-2. **"Do not invent log lines or events that were not given."** — reinforces rule 1 with explicit examples.
-3. **"Set confidence lower if evidence is ambiguous or incomplete."** — the LLM is told to self-calibrate.
-4. **"Never recommend automated remediation -- suggest human-verifiable steps only."** — the analyser is advisory; all fixes require a human to execute and verify.
-5. **"Respond ONLY with a valid JSON object matching the schema below."** — no prose, no markdown, no code fences. The response must parse as `IncidentReport`.
-
-#### User Prompt Template
-
-The user prompt (`USER_PROMPT_TEMPLATE`) is a structured text block with the following fields, each clearly delimited by section headers (`===`, `---`):
-
-| Template Placeholder | Source on `EvidencePackage` | Example |
-|----------------------|----------------------------|---------|
-| `{namespace}` | `package.namespace` | `demo` |
-| `{target}` | `package.pod_name` | `demo-app-bd594d4bd-87nhj` |
-| `{timestamp}` | `datetime.now(timezone.utc).isoformat()` (generated at call time) | `2026-07-21T10:30:00+00:00` |
-| `{pod_status}` | `package.pod_status_summary or "(no pod status available)"` | `Last State: Terminated, Reason: OOMKilled` |
-| `{current_logs}` | `package.current_logs or "(no current logs)"` | `RuntimeError: Missing required configuration...` |
-| `{previous_logs}` | `package.previous_logs or "(no previous logs)"` | `Traceback (most recent call last):...` |
-| `{k8s_events}` | `package.k8s_events_filtered or "(no kubernetes events)"` | `Warning: BackOff started container demo-app` |
-| `{restart_count}` | `package.restart_count` | `7` |
-| `{json_schema}` | `json.dumps(IncidentReport.model_json_schema(), indent=2)` | (full JSON Schema, ~130 lines) |
-
-#### Schema Injection
-
-The full JSON Schema for `IncidentReport` is injected into the user prompt as a fenced JSON block. This is critical for providers that do not support structured-output APIs (e.g. DeepSeek's `json_object` mode does not accept a schema field — see [Section 14](#14-llm-provider-layer)).
-
-```python
-def build_prompt(package: EvidencePackage) -> tuple[str, str]:
-    schema_json = json.dumps(IncidentReport.model_json_schema(), indent=2)
-    user_prompt = USER_PROMPT_TEMPLATE.format(
-        namespace=package.namespace,
-        target=package.pod_name,
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        pod_status=package.pod_status_summary or "(no pod status available)",
-        current_logs=package.current_logs or "(no current logs)",
-        previous_logs=package.previous_logs or "(no previous logs)",
-        k8s_events=package.k8s_events_filtered or "(no kubernetes events)",
-        restart_count=package.restart_count,
-        json_schema=schema_json,
-    )
-    return SYSTEM_PROMPT, user_prompt
-```
-
----
-
-## 14. LLM Provider Layer
+## 15. LLM Provider Layer (llm-svc)
 
 ### Provider Architecture
 
 ```mermaid
-classDiagram
-
-class BaseLLMProvider{
-    <<abstract>>
-    +analyse(package) IncidentReport
-}
-
-class MockProvider{
-    +analyse(package) IncidentReport
-}
-
-class OpenAIProvider{
-    -AsyncOpenAI client
-    -string model
-    +analyse(package) IncidentReport
-}
-
-class AnthropicProvider{
-    -AsyncAnthropic client
-    -string model
-    +analyse(package) IncidentReport
-}
-
-class DeepSeekProvider{
-    -string api_key
-    -string model
-    -string base_url
-    +analyse(package) IncidentReport
-}
-
-BaseLLMProvider <|-- MockProvider
-BaseLLMProvider <|-- OpenAIProvider
-BaseLLMProvider <|-- AnthropicProvider
-BaseLLMProvider <|-- DeepSeekProvider
+flowchart TD
+    ANALYSE["POST /analyse"] --> FACTORY["get_provider()<br>reads LLM_PROVIDER env per call (default mock, lowercased)<br>unknown value → warn + MockProvider"]
+    FACTORY --> ABC["BaseLLMProvider ABC<br>async analyse(package) -> IncidentReport"]
+    ABC --> MOCK["Mock"]
+    ABC --> OPENAI["OpenAI"]
+    ABC --> ANTHROPIC["Anthropic"]
+    ABC --> DEEPSEEK["DeepSeek"]
 ```
-
-### Factory Selection
-
-`app/core/llm/__init__.py:1-28` — `get_provider()` reads `LLM_PROVIDER` env var, lazy-imports the right class, and returns an instance:
-
-| `LLM_PROVIDER` | Class | Default Model | Notes |
-|----------------|-------|---------------|-------|
-| `mock` (default) | `MockProvider` | — | No API call; heuristic classifier |
-| `openai` | `OpenAIProvider` | `gpt-4o-mini` | Requires `OPENAI_API_KEY` |
-| `anthropic` | `AnthropicProvider` | `claude-haiku-4-5-20251001` | Requires `ANTHROPIC_API_KEY` |
-| `deepseek` | `DeepSeekProvider` | `deepseek-chat` | Requires `DEEPSEEK_API_KEY` |
-| (unknown) | `MockProvider` | — | Logs warning, falls back to mock |
-
-The factory is case-insensitive (`OpenAI` == `openai` == `OPENAI` — `.lower()` is applied). Unknown values log a warning via Python's `logging` module and fall back to `MockProvider` — this prevents a typo from crashing production.
 
 ### Provider Implementation Details
 
-#### MockProvider (`mock_provider.py`)
+#### MockProvider (`app/llm/mock_provider.py`)
 
-A deterministic heuristic classifier used for testing and local development without API costs. It concatenates `package.current_logs` and `package.previous_logs`, lowercases the result, and checks for substring patterns:
+Deterministic heuristic classifier — no external calls, < 50 ms, the default for local dev and CI. First match wins on lowercased evidence:
 
-| Text Pattern (in lowercased logs or pod_status_summary) | Category | Severity | Confidence |
-|----------------------------------------------------------|----------|----------|------------|
-| `database_url` | `config` | medium | 0.5 |
-| `connection refused` | `dependency` | medium | 0.5 |
-| `oomkilled` or `memory` (in logs **or** `pod_status_summary`) | `resource` | medium | 0.5 |
-| `imagepullbackoff` | `image` | medium | 0.5 |
-| (none of the above) | `unknown` | medium | 0.5 |
+| Order | Condition | Category | Root cause |
+|-------|-----------|----------|-----------|
+| 1 | `database_url` in logs | config | Missing DATABASE_URL environment variable |
+| 2 | `connection refused` anywhere | dependency | Dependent service is unreachable |
+| 3 | `oomkilled`, or `memory` in logs + `killed` | resource | Container exceeded memory limit (OOMKilled) |
+| 4 | `imagepullbackoff`, or `image`+`pull` in status | image | Kubernetes cannot pull the container image |
+| 5 | `readiness probe failed` | probe | Readiness probe is failing |
+| 6 | `liveness probe failed` | probe | Liveness probe is failing |
+| 7 | `containercannotrun`, or crashloop + `executable file not found` | crash | Container cannot start (executable not found) |
+| 8 | `runtimeerror` + (`startup` or crashloop status) | crash | Application raised a runtime error on startup |
+| 9 | `crashloopbackoff` | crash | Container is in CrashLoopBackOff |
+| 10 | else | unknown | Unable to determine root cause from evidence |
 
-The mock provider produces a valid `IncidentReport` with `[MOCK]` prefixed to `incident_summary` and `suggested_fix`, so its output is easy to distinguish from real LLM output in logs and reports. The `likely_root_cause` is a hardcoded string per category (e.g. "Missing DATABASE_URL environment variable" for config).
+Always `severity="medium"`, `confidence=0.5`, summary prefixed `[MOCK]`, one `EvidenceItem` (first 200 chars of current logs), `kubectl describe pod` as the recommended command.
 
-#### OpenAIProvider (`openai_provider.py`)
+#### OpenAIProvider (`app/llm/openai_provider.py`)
 
-Uses the **GA** (general availability) `client.chat.completions.parse()` API with `response_format=IncidentReport` (a Pydantic class). This is the structured-output endpoint that guarantees the response parses as `IncidentReport` or raises a typed exception.
+`AsyncOpenAI(api_key=$OPENAI_API_KEY)`; model `LLM_MODEL` or `gpt-4o-mini`. Calls **`chat.completions.parse()`** with `response_format=IncidentReport` (native structured outputs — Pydantic is the wire format). Error mapping: `LengthFinishReasonError` → "Output truncated (increase LLM_MAX_TOKENS)"; `ContentFilterFinishReasonError` → "Content filtered by safety system"; `message.parsed is None` → `ValueError` with the refusal payload.
 
-| Aspect | Detail |
-|--------|--------|
-| SDK | `openai.AsyncOpenAI` (async) |
-| Method | `client.chat.completions.parse(model, messages, response_format=IncidentReport, max_tokens)` |
-| Model | `gpt-4o-mini` (default, override via `LLM_MODEL`) |
-| Parsed is None | If `message.parsed is None`, raises `ValueError` with the refusal reason (`message.refusal`) |
-| Length finish | Catches `LengthFinishReasonError` and raises `RuntimeError` suggesting to increase `LLM_MAX_TOKENS` |
-| Content filter | Catches `ContentFilterFinishReasonError` and raises `RuntimeError` |
-| API key | Reads `OPENAI_API_KEY` from env at construction (raises `KeyError` if missing) |
+#### AnthropicProvider (`app/llm/anthropic_provider.py`)
 
-#### AnthropicProvider (`anthropic_provider.py`)
+`anthropic.AsyncAnthropic(api_key=$ANTHROPIC_API_KEY)`; default model `claude-haiku-4-5-20251001`. Calls **`messages.parse()`** with `output_format=IncidentReport`; reads `response.content[0].parsed_output` (None → `ValueError`).
 
-Uses the `client.messages.parse()` API with `output_format=IncidentReport` (a Pydantic class). Anthropic's structured-output support reads the Pydantic schema internally and validates the response.
+#### DeepSeekProvider (`app/llm/deepseek_provider.py`)
 
-| Aspect | Detail |
-|--------|--------|
-| SDK | `anthropic.AsyncAnthropic` (async) |
-| Method | `client.messages.parse(model, system=..., messages=..., output_format=IncidentReport, max_tokens)` |
-| Model | `claude-haiku-4-5-20251001` (default, override via `LLM_MODEL`) |
-| Output parsing | `response.content[0].parsed_output` — a validated `IncidentReport` instance |
-| Parsed is None | If `parsed_output is None`, logs a warning with the raw text and raises `ValueError` |
-| API key | Reads `ANTHROPIC_API_KEY` from env at construction (raises `KeyError` if missing) |
-
-#### DeepSeekProvider (`deepseek_provider.py`)
-
-DeepSeek's API is OpenAI-compatible but **does not support the `schema` field in `response_format`** — only `{"type": "json_object"}`. To enforce structure, the schema is appended to the system prompt via `_JSON_INSTRUCTION_TEMPLATE`:
-
-```text
-
-You MUST respond with valid JSON (json_object) conforming to this schema:
-{schema}
-
-Example: {"incident_id": "inc-001", "severity": "high", "failure_category": "crash", "likely_root_cause": "...", "suggested_fix": "...", "confidence": 0.8, "supporting_evidence": [{"source": "logs", "pod": "demo-app", "evidence": "..."}], "recommended_commands": ["kubectl ..."], "human_verification_steps": ["..."]}
-```
-
-The template is appended to (not replacing) the system prompt from `build_prompt()`.
-
-| Aspect | Detail |
-|--------|--------|
-| HTTP client | `httpx.AsyncClient` (async, no client-level timeout) |
-| Endpoint | `POST https://api.deepseek.com/v1/chat/completions` |
-| Auth | `Authorization: Bearer {DEEPSEEK_API_KEY}` |
-| Body | `{"model": "deepseek-chat", "messages": [...], "response_format": {"type": "json_object"}, "max_tokens": 2000}` |
-| Timeout | 60 s on the `client.post()` call (not on the client) |
-| Response parsing | `response.json()["choices"][0]["message"]["content"]` → `json.loads()` → `IncidentReport.model_validate(dict)` |
-| Error handling | `response.raise_for_status()` for HTTP errors; catches `json.JSONDecodeError` and raises `RuntimeError` |
-| API key | Reads `DEEPSEEK_API_KEY` from env at construction (raises `KeyError` if missing) |
+No SDK — raw httpx POST to `https://api.deepseek.com/v1/chat/completions` (Bearer auth, timeout 60) with `response_format: {"type": "json_object"}`. The system prompt is augmented with `_JSON_INSTRUCTION_TEMPLATE`: the full schema JSON **plus a hardcoded valid example object**. Response `choices[0].message.content` is `json.loads`ed (`JSONDecodeError` → "non-JSON/truncated output") then `IncidentReport.model_validate`d.
 
 ### Provider Comparison Matrix
 
-| Feature | Mock | OpenAI | Anthropic | DeepSeek |
-|---------|------|--------|-----------|----------|
-| API call | No | Yes | Yes | Yes |
-| Structured output | Hardcoded | Native (parse) | Native (parse) | Prompt-injected |
-| Schema enforcement | None | Pydantic class | Pydantic class | JSON Schema in prompt |
-| Error handling | None | Length/Filter exceptions | SDK exceptions | JSONDecode + HTTPStatus |
-| Cost per call | $0 | ~ $0.0001 | ~ $0.0002 | ~ $0.0001 |
-| Latency (median) | < 1 ms | ~ 2 s | ~ 3 s | ~ 6 s |
-| Timeout | N/A | SDK default (60 s) | SDK default (60 s) | 60 s |
+| | Mock | OpenAI | Anthropic | DeepSeek |
+|---|---|---|---|---|
+| Env key | — | `OPENAI_API_KEY` | `ANTHROPIC_API_KEY` | `DEEPSEEK_API_KEY` |
+| Default model | (none) | `gpt-4o-mini` | `claude-haiku-4-5-20251001` | `deepseek-chat` |
+| Mechanism | heuristic rules | `chat.completions.parse` | `messages.parse` | JSON mode + schema-in-prompt |
+| Latency | < 50 ms | 2–8 s | 2–8 s | ~6 s (measured) |
+| Cost | free | paid | paid | cheapest paid |
+| Offline / CI-safe | ✓ | ✗ | ✗ | ✗ |
+| Schema guarantee | code-constructed | API-enforced | API-enforced | prompt-enforced + Pydantic validation |
 
 ---
 
-## 15. Validation & Persistence
+## 16. Persistence & Stats (reports-svc)
 
-### `ReportValidator`
+### `ReportValidator` (llm-svc, `app/validator.py`)
 
-`app/core/validator.py:1-39` — validates that an LLM-produced dict or JSON string conforms to the `IncidentReport` schema. Used in two places:
+`validate_dict` → `IncidentReport.model_validate`; `validate_string` → `json.loads` + object check; `is_valid` bool wrapper; `get_schema[_json]`. In practice the providers validate implicitly (structured-output parse or explicit `model_validate`), so this class is the safety net and test surface.
 
-1. **Evaluation pipeline** — `evaluation/metrics.py:evaluate()` calls `ReportValidator.is_valid()` to compute the `schema_valid` metric. This is **not** hardcoded — it actually validates.
-2. **Provider post-check** — providers can optionally validate their output before returning, though the current implementation relies on Pydantic parsing within the SDK.
+### `ReportsDB` (`app/db.py`) — thread-safe SQLite layer
 
-| Method | Input | Output | Notes |
-|--------|-------|--------|-------|
-| `validate_dict(d)` | `dict` | `IncidentReport` | Uses `IncidentReport.model_validate(d)`; raises `ValidationError` on failure |
-| `validate_string(s)` | `str` (JSON) | `IncidentReport` | `json.loads` first (raises `ValueError` on bad JSON), then `validate_dict` |
-| `validate(x)` | `dict \| str` | `IncidentReport` | Dispatches on type: str → `validate_string`, dict → `validate_dict` |
-| `is_valid(x)` | `dict \| str` | `bool` | Try/except wrapper catching `ValidationError` and `ValueError`; no exception raised |
-| `get_schema()` | — | `dict` | Returns `IncidentReport.model_json_schema()` |
-| `get_schema_json()` | — | `str` | `json.dumps(get_schema(), indent=2)` |
+- **Startup**: mkdir parent → `sqlite3.connect(path, check_same_thread=False)` → `row_factory = sqlite3.Row` → a `threading.Lock` → `_init_schema()` executescript of `schema.sql` (idempotent `CREATE … IF NOT EXISTS`; no migration framework). Schema path: `SCHEMA_PATH` env (Docker: `/app/schema.sql`), else repo-relative `contracts/database/schema.sql`.
+- **`save_report(report, ns, pod, job_id)`** — one locked transaction: `INSERT INTO incidents` (denormalised columns + `report_json = report.model_dump_json()`) then `UPDATE analysis_jobs SET incident_id = ? WHERE job_id = ?`.
+- **`upsert_job(job)`** — `INSERT … ON CONFLICT(job_id) DO UPDATE SET status=excluded.status, stage=excluded.stage, incident_id=COALESCE(excluded.incident_id, analysis_jobs.incident_id), latency_ms=COALESCE(…), error=excluded.error`. The COALESCEs matter: a late "queued" snapshot must never erase a stored `incident_id`.
+- **`list_reports`** — dynamic AND-ed WHERE from the four filters + COUNT + paged SELECT → `ReportSummary` rows.
+- **`get_report(id)`** — `SELECT report_json` → `json.loads` (the nested arrays live only in the JSON column, deliberately not normalised).
+- **`get_stats(range)`** — `_RANGE_MODIFIERS = {"24h": "-1 day", "7d": "-7 days", "30d": "-30 days"}`:
+  - `total_reports` — all-time incident count;
+  - `reports_24h` — `created_at >= datetime('now','-1 day')`;
+  - `mean_latency_ms` — over `analysis_jobs` `status='done' AND latency_ms IS NOT NULL` in range, rounded to 2;
+  - `mean_confidence` — over incidents in range, rounded to 4;
+  - `category_counts` — grouped over **all** incidents;
+  - `latency_series` — last 50 done jobs with latency, reversed to chronological `LatencyPoint`s.
+- **`_to_iso8601`** — converts SQLite `"YYYY-MM-DD HH:MM:SS"` to `"…T…Z"`.
 
-### `persistence.py`
+### Why SQLite (not PostgreSQL)
 
-`app/core/persistence.py:1-73` — file-based JSON storage for incident reports. No database; each report is one JSON file on disk.
-
-| Function | Purpose | Notes |
-|----------|---------|-------|
-| `save_report(report, reports_dir=None)` | Write report to `REPORTS_DIR/{unix_timestamp}_{incident_id}.json` | Creates dir if missing; timestamp is `int(time.time())` (Unix epoch); writes `report.model_dump_json(indent=2)` |
-| `list_reports(reports_dir=None)` | Return list of summary dicts | Each summary has `incident_id`, `incident_summary`, `failure_category`, `severity`, `confidence`, `file`; skips files with `JSONDecodeError` |
-| `get_report(incident_id, reports_dir=None)` | Return `IncidentReport` or `None` | Scans `REPORTS_DIR` for a file whose JSON contains the matching `incident_id`; uses `IncidentReport.model_validate(data)` |
-
-#### Why File-Based (not a Database)
-
-For a dissertation artefact, a file-based store is appropriate:
-
-- **No state to migrate** — each report is independent, human-readable, and git-trackable.
-- **No dependency** — no database process to start, no connection pool, no migrations.
-- **Inspection** — `ls reports/` shows every report; `cat reports/*.json | jq` is ad-hoc analysis.
-- **Portability** — the same code works on EC2, locally, and in tests.
-
-A production system would swap this for SQLite or PostgreSQL behind a `ReportStore` interface, but the file-based store is sufficient for the research question.
+At dissertation scale (~10 analyses/day) PostgreSQL is pure operational cost. SQLite in WAL mode gives crash safety, concurrent reads with the single writer, and a backup story of "copy one file". The contract (`schema.sql` + ownership rule "only reports-svc writes") keeps a future swap to PostgreSQL confined to one service.
 
 ---
 
-## 16. Baseline Classifiers
+## 17. State Stores: Redis & SQLite
 
-Two baseline classifiers are implemented to compare against the LLM. Both take an `EvidencePackage` and return a `failure_category` string. They are **not** given the LLM's prompt or schema — they see only the same redacted evidence the LLM sees.
+### Redis (owned by orchestrator-svc)
+
+Covered structurally in [Section 10](#10-orchestrator-job-state-machine--pipeline); the contract is [`contracts/database/redis_schema.md`](../contracts/database/redis_schema.md):
+
+| Key pattern | Type | TTL | Writer | Readers |
+|-------------|------|-----|--------|---------|
+| `job:{job_id}` | Hash | 24 h | orchestrator | orchestrator (API + SSE replay) |
+| `job:queue` | List | — | orchestrator (LPUSH) | v2 workers (BRPOP) — unused in v1 |
+| `job:{job_id}:events` | Pub/Sub | ephemeral | orchestrator (PUBLISH) | orchestrator SSE handler (SUBSCRIBE) per client |
+
+Server config (compose + `k8s/services/redis.yaml`): `appendonly yes` (AOF — jobs survive restarts), `maxmemory-policy allkeys-lru`, keyspace notifications disabled (events are published explicitly).
+
+**Division of labour**: Redis is the *primary* job-state store (sub-ms reads for polling, pub/sub for SSE); SQLite is the *durable snapshot* (queryable history feeding `/api/stats`). The 24 h hash TTL exists so recently-finished jobs stay pollable from Redis without hammering SQLite; history lives forever in `analysis_jobs`.
+
+### SQLite (owned by reports-svc, WAL mode)
+
+PRAGMAs: `journal_mode = WAL`, `foreign_keys = ON`, `encoding = "UTF-8"`.
+
+**`incidents`** — one row per completed `IncidentReport`:
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `incident_id` | TEXT | PRIMARY KEY (UUIDv7) |
+| `namespace`, `pod_name` | TEXT | NOT NULL |
+| `failure_category` | TEXT | NOT NULL, `CHECK IN ('crash','config','dependency','network','image','resource','probe','unknown')` |
+| `severity` | TEXT | NOT NULL, `CHECK IN ('low','medium','high','critical')` |
+| `confidence` | REAL | NOT NULL, `CHECK (0.0 <= confidence <= 1.0)` |
+| `incident_summary`, `likely_root_cause`, `affected_component`, `suggested_fix` | TEXT | NOT NULL (denormalised for filtering/display) |
+| `report_json` | TEXT | NOT NULL — full nested report (evidence, commands, steps) |
+| `created_at`, `updated_at` | TEXT | NOT NULL `DEFAULT (datetime('now'))` |
+
+Indexes: `idx_incidents_ns_pod (namespace, pod_name)`, `idx_incidents_category (failure_category)`, `idx_incidents_created (created_at DESC)`.
+
+**`analysis_jobs`** — durable snapshot of the Redis job state:
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `job_id` | TEXT | PRIMARY KEY (UUIDv7) |
+| `namespace`, `pod_name` | TEXT | NOT NULL |
+| `status` | TEXT | NOT NULL, `CHECK IN ('queued','collecting','processing','llm_call','persisting','done','failed')` |
+| `stage` | TEXT | NULL (queued jobs have no stage) |
+| `incident_id` | TEXT | NULL, `REFERENCES incidents(incident_id)` — set only when done |
+| `latency_ms` | INTEGER | NULL until terminal |
+| `error` | TEXT | NULL unless failed |
+| `created_at`, `updated_at` | TEXT | NOT NULL `DEFAULT (datetime('now'))` |
+
+Indexes: `idx_jobs_status`, `idx_jobs_created (created_at DESC)`.
+
+**Triggers** — `trg_incidents_updated` / `trg_jobs_updated`: `AFTER UPDATE … WHEN NEW.updated_at = OLD.updated_at` → stamp `updated_at = datetime('now')` (only when the writer didn't set it explicitly).
+
+No seed data: scenarios are filesystem-sourced, not DB rows.
+
+---
+
+## 18. Frontend (Next.js Dashboard)
+
+Next.js 15.3 App Router, React 19, TypeScript strict, Tailwind v4, shadcn/ui (new-york, zinc), dark-only "ops console" aesthetic. `next.config.ts` sets `output: "standalone"` (Docker runner stage) and full-URL fetch logging.
+
+### Pages (all under `frontend/src/app/`)
+
+| Route | Type | Renders | Data |
+|-------|------|---------|------|
+| `/` | server | Dashboard: 4 StatCards (total, 24 h, mean latency, mean confidence), CategoryChart (bar), LatencyChart (line), recent ReportsTable (6) | `GET /api/stats?range=7d` + `GET /api/reports?limit=6` |
+| `/analyse` | client | "New analysis" form (namespace/pod, defaults `demo`/`demo-app`) + live **PipelineTimeline**; success card with badges + report link; failure alert | `POST /api/jobs` then SSE `GET /api/jobs/{id}/stream` |
+| `/jobs` | client | Paginated (15/page) job table with status filter (all 7 statuses), stage/error detail, latency, report link | `GET /api/jobs?…` |
+| `/reports` | client | Filter form (namespace, pod, category, severity) + paginated ReportsTable | `GET /api/reports?…` |
+| `/reports/[id]` | server | Full report: badges, ConfidenceMeter, root-cause/component/fix cards, Tabs (Evidence / Commands / Verification) | `GET /api/reports/{id}` |
+| `/scenarios` | client | Scenario card grid + Apply/Reset confirm dialogs + sonner toasts (incl. 409 warning) | `GET /api/scenarios`, `POST …/apply`, `POST …/reset` |
+
+Chrome: `AppSidebar`/`MobileNav` with 5 nav items and a `HealthPill` polling `GET /health` every 30 s (emerald ok / amber cluster unreachable / red gateway down). Timestamps render in UTC (`formatDateTime`) to avoid hydration mismatches.
+
+### Data Layer (`src/lib/`)
+
+- **`api.ts`** — ten typed functions (`getHealth`, `createJob`, `listJobs`, `getJob`, `listReports`, `getReport`, `getStats`, `listScenarios`, `applyScenario`, `resetScenarios`), all straight to the gateway (no Next API routes / rewrites), all reads `cache: "no-store"`. Base URL is environment-aware: server components use `INTERNAL_API_URL` (default `http://gateway:8000`), the browser uses `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`). `ApiError` carries `status` + parsed RFC 7807 `problem`; network failure → `ApiError(0, …, "Could not reach the API gateway…")`.
+- **`sse.ts`** — `streamJob(jobId, onEvent, onError)`: native `EventSource` with **named-event listeners** (`stage`, `done`, `failed`), JSON-parsed payloads, auto-`close()` on terminal events, returns an unsubscribe function for React cleanup. Transport loss is synthesised by the page into a `failed` event ("Lost connection to the event stream before the job finished.").
+- **`utils.ts`** — `cn`, UTC-stable date/latency/percent formatters, `shortId`. **`logger.ts`** — tiny structured console logger. `middleware.ts` + `instrumentation.ts` — JSON-lines request logging and process-level error logging.
+
+### Types
+
+The type-safety chain: `contracts/api/gateway.yaml` → `openapi-typescript` (`npm run generate:types`) → checked-in `src/types/api.d.ts` (936 lines, do-not-edit) → thin aliases in `src/types/index.ts` (`IncidentReport`, `JobState`, `Paginated<T>`, the four enum unions, SSE payloads). Changing the contract and regenerating turns API drift into compile errors.
+
+### Components Worth Knowing
+
+`PipelineTimeline` (6-stage stepper with spinner/check/X states + live stage text), `ReportsTable`, `EvidenceCard` (source badge + scrollable `<pre>`), `ConfidenceMeter` (emerald ≥80 / amber ≥60 / red), `JobStatusBadge`/`SeverityBadge`/`CategoryBadge` (per-value colour maps), `CategoryChart`/`LatencyChart` (recharts), `StatCard`, `SpotlightCard` (mouse-tracking glow), `EmptyState`/`ErrorState`, `CopyButton`, plus 14 shadcn primitives in `components/ui/`.
+
+### Docker
+
+Multi-stage (dev / deps / builder / runner). Production = the standalone Node server on :3000 as a non-root user; `NEXT_PUBLIC_API_URL` is baked into the browser bundle at **build time** (must be browser-reachable), while SSR fetches use the runtime `INTERNAL_API_URL`.
+
+---
+
+## 19. Baseline Classifiers
+
+The research comparison arms. Both consume an `EvidencePackage` and return a category (+ confidence + explainability data); the harness wraps them into full `IncidentReport`s.
 
 ### KeywordClassifier (`evaluation/baselines/keyword.py`)
 
@@ -1300,26 +1488,24 @@ A weighted 3-tier scoring system with disambiguation:
 
 ```mermaid
 flowchart LR
-    Text["Concatenate all\nevidence text"] --> Scan
+    Text["Concatenate all<br>evidence text<br>(current + previous logs,<br>events, status)"] --> Scan
     subgraph Scan["Scan against 7 categories"]
-        Tier1["Tier 1: weight 3\ndefinitive signals\n(imagepullbackoff, oomkilled,\ntraceback, runtimeerror, ...)"]
-        Tier2["Tier 2: weight 2\nstrong signals\n(connection refused, configmap,\nliveness probe, startup_fault, ...)"]
-        Tier3["Tier 3: weight 1\nweak/symptom\n(crashloopbackoff, exception,\nunhealthy, backoff, ...)"]
+        Tier1["Tier 1: weight 3 — definitive<br>(imagepullbackoff, oomkilled,<br>traceback, runtimeerror, …)"]
+        Tier2["Tier 2: weight 2 — strong<br>(connection refused, configmap,<br>liveness probe, startup_fault, …)"]
+        Tier3["Tier 3: weight 1 — weak/symptom<br>(crashloopbackoff, exception,<br>unhealthy, backoff, …)"]
     end
     Scan --> Scores["Per-category scores"]
-    Scores --> Disamb["Disambiguate:\nhalve symptom (probe) scores\nif root-cause category ≥ 2"]
+    Scores --> Disamb["Disambiguate:<br>halve symptom (probe) scores<br>if any root-cause category ≥ 2"]
     Disamb --> Pick["Pick highest score"]
-    Pick --> Conf["Confidence =\nbest / (best + second + 0.5),\ncapped at 0.9"]
+    Pick --> Conf["Confidence = best / (best + second + 0.5)<br>capped at 0.9"]
     Conf --> Out["{failure_category, confidence, matched_keywords}"]
 ```
 
-#### KEYWORD_WEIGHTS (7 categories)
-
-The classifier concatenates `current_logs`, `previous_logs`, `k8s_events_filtered`, and `pod_status_summary` into a single lowercased string, then scans for keywords.
+`KEYWORD_WEIGHTS` — 7 categories (8th is `unknown`, the zero-score fallback):
 
 | Category | Tier 1 (weight 3) | Tier 2 (weight 2) | Tier 3 (weight 1) |
 |----------|-------------------|-------------------|-------------------|
-| `crash` | `traceback`, `runtimeerror`, `executable file not found`, `no such file or directory`, `containercannotrun`, `starterror`, `zerodivision`, `segfault`, `panic` | `startup_fault`, `unhandled exception`, `division by zero` | `crashloopbackoff`, `exception` |
+| `crash` | `executable file not found`, `no such file or directory`, `containercannotrun`, `starterror`, `traceback`, `runtimeerror`, `zerodivision`, `segfault`, `panic` | `startup_fault`, `unhandled exception`, `division by zero` | `crashloopbackoff`, `exception` |
 | `config` | `missing required`, `environment variable`, `keyerror` | `not set`, `configmap`, `invalid value`, `log_level` | `configuration`, `invalid` |
 | `dependency` | `no route to host`, `name resolution`, `dns` | `connection refused`, `unreachable`, `connection timeout`, `timeout while connecting`, `database connection` | `database`, `timeout` |
 | `image` | `imagepullbackoff`, `errimagepull`, `pull access denied`, `imagenotfound`, `manifest not found`, `failed to pull image` | `back-off pulling image` | `manifest`, `image` |
@@ -1327,9 +1513,11 @@ The classifier concatenates `current_logs`, `previous_logs`, `k8s_events_filtere
 | `probe` | `readinessprobefailed`, `livenessprobefailed` | `readiness probe`, `liveness probe`, `probe failed`, `probe timed out`, `http probe failed` | `unhealthy`, `backoff` |
 | `network` | `port already in use`, `address already in use`, `no such host`, `network unreachable`, `no endpoints` | `connection reset`, `targetport` | `connection refused` |
 
-#### Disambiguation Logic
+Scoring: sum the weights of every substring-matched keyword across the concatenated package text (current + previous logs + filtered events + status summary, all lowercased).
 
-`_SYMPTOM_CATEGORIES = {"probe"}` and `_ROOT_CAUSE_CATEGORIES = {"image", "resource", "config", "dependency", "crash", "network"}`. If any root-cause category has a raw score ≥ 2, all symptom categories have their scores halved. This prevents e.g. a missing-database scenario (high `dependency` + high `probe` because readiness fails) from being misclassified as `probe`.
+**Disambiguation** — `_SYMPTOM_CATEGORIES = {"probe"}` and `_ROOT_CAUSE_CATEGORIES = {"image", "resource", "config", "dependency", "crash", "network"}`. If any root-cause category has a raw score ≥ 2.0, every probe score is **halved**. This prevents e.g. a missing-database scenario (high `dependency` + high `probe` because readiness fails) from being misclassified as `probe`.
+
+Confidence: `min(0.9, best / (best + second + 0.5))` rounded to 2 decimals (unknown → 0.0). `classify_detailed` also returns `matched_keywords` with weights.
 
 ### RuleBasedClassifier (`evaluation/baselines/rulebased.py`)
 
@@ -1340,21 +1528,21 @@ flowchart TD
     Pkg["EvidencePackage"] --> Extract
     subgraph Extract["Extract signals"]
         E1["pod_status text"]
-        E2["last_state_reason\n(regex extract)"]
-        E3["last_state_message\n(regex extract)"]
+        E2["last_state_reason<br>(regex extract from describe)"]
+        E3["last_state_message<br>(regex extract from describe)"]
         E4["k8s_events text"]
         E5["restart_count"]
         E6["current + previous logs"]
     end
     Extract --> Rules
     subgraph Rules["Apply rules in priority order"]
-        R1["1. _image_rule\nImagePullBackOff + text"]
-        R2["2. _resource_rule\nOOMKilled + events + memory"]
-        R3["3. _config_rule\nConfigMap + missing/invalid text"]
-        R4["4. _dependency_rule\nconnection refused + database text"]
-        R5["5. _probe_rule\nReadiness/Liveness event reasons"]
-        R6["6. _crash_rule\nContainerCannotRun + traceback + restart_count > 2"]
-        R7["7. _network_rule\nno endpoints + port mismatch"]
+        R1["1. _image_rule — ImagePullBackOff in reasons or text"]
+        R2["2. _resource_rule — OOMKilled in reasons, Killing in events, memory signals"]
+        R3["3. _config_rule — ConfigMap + missing/invalid, KeyError, env var not set"]
+        R4["4. _dependency_rule — connection refused, no route to host, database unreachable"]
+        R5["5. _probe_rule — Readiness/LivenessProbeFailed in events, probe timeout"]
+        R6["6. _crash_rule — ContainerCannotRun, StartError, traceback, restart_count > 2"]
+        R7["7. _network_rule — address already in use, no endpoints, connection reset + port"]
         R1 --> R2 --> R3 --> R4 --> R5 --> R6 --> R7
     end
     Rules --> First["First match wins"]
@@ -1368,18 +1556,16 @@ flowchart TD
 | 1 | `image` | ImagePullBackOff is unambiguous; no other rule should override it |
 | 2 | `resource` | OOMKilled is unambiguous; events show Killing + OOM |
 | 3 | `config` | Missing env/ConfigMap is a common root cause that masquerades as crash |
-| 4 | `dependency` | DB connection refused often causes probe failures; dependency before probe |
-| 5 | `probe` | Probe failures are usually symptoms; only classify as probe if no root cause found |
+| 4 | `dependency` | DB connection refused often causes probe failures — dependency before probe |
+| 5 | `probe` | Probe failures are usually symptoms; only classify as probe if no root cause |
 | 6 | `crash` | CrashLoopBackOff with traceback; after probe because probe timeout is not a crash |
 | 7 | `network` | Service/endpoint issues; rarest in the scenario set |
 
-#### Confidence Calculation
+Mechanics: extraction regexes `_REASON_RE`, `_MESSAGE_RE`, `_LAST_STATE_REASON_RE` pull structured fields from the pod describe text; each rule is a function over `(EvidencePackage, lowercased_text)`. Examples: `_resource_rule` fires on `OOMKilled`/`Evicted` reasons, `exit code: 137`, or `memory` in status with restarts; `_crash_rule` on `ContainerCannotRun`/`StartError` last-state, `traceback`/`runtimeerror`/`panic` text, or `crashloopbackoff` with restart_count > 2. All triggered rules are collected (not just the first match); the first in priority order is the classification.
 
-`confidence = min(0.85, 0.5 + 0.1 * len(triggered_rules))` — a single triggered rule gives 0.6, two give 0.7, and the cap is 0.85. This is deliberately lower than the LLM's confidence (which averages 0.90) because the rule-based classifier has no semantic understanding.
+Confidence: `min(0.85, 0.5 + 0.1 × len(triggered_rules))` — a single triggered rule = 0.6, two = 0.7, cap 0.85. Deliberately lower than the LLM's confidence (which averages 0.90) because rule-based has no semantic understanding.
 
-#### `explain()` Method
-
-Returns a dict with the triggered rules and their evidence, useful for debugging:
+`explain()` returns a dict with the triggered rules and their evidence, useful for debugging:
 
 ```python
 classifier.explain(package)
@@ -1392,339 +1578,270 @@ classifier.explain(package)
 
 ---
 
-## 17. Evaluation Harness & Metrics
+## 20. Evaluation Harness & Metrics
 
-### `evaluation/harness.py`
+### `evaluation/harness.py` + `evaluation/services.py`
 
-The harness orchestrates scenario execution, classifier invocation, and metric scoring. It is the core research instrument.
+The harness drives the **live services** (not in-process objects) so evaluation measures the deployed pipeline:
 
-#### CLI
+```mermaid
+flowchart LR
+    subgraph Harness["evaluation harness adapters"]
+        SC["ServiceCollector"]
+        SP["ServicePreprocessor"]
+        PTR["PassThroughRedactor"]
+        SLP["ServiceLLMProvider"]
+    end
 
-```bash
-python -m evaluation.harness \
-    --classifier llm \           # llm | keyword | rulebased
-    --scenarios 01,02,05 \       # comma-separated scenario IDs (default: all)
-    --namespace demo \           # k8s namespace (default: demo)
-    --pod-name demo-app \        # pod name or label (default: demo-app)
-    --output evaluation/results.json  # results file (default: evaluation/results_{classifier}.json)
+    SC -->|"POST {collector}/collect<br>httpx, timeout 60"| COLL["collector-svc :8002"]
+    SP -->|"POST {processor}/process<br>timeout 30"| PROC["processor-svc :8003"]
+    PTR -->|"identity<br>processor already redacts"| PKG["EvidencePackage"]
+    SLP -->|"POST {llm}/analyse<br>async, timeout 90"| LLM["llm-svc :8004"]
+
+    COLL --> RAW["RawEvidence"]
+    PROC --> PKG
+    LLM --> REP["IncidentReport"]
 ```
+
+CLI (`python -m evaluation.harness`):
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--classifier` | `llm` | `llm` \| `keyword` \| `rulebased` |
+| `--scenarios` | all 10 | Subset filter, e.g. `--scenarios 01-missing-env 05-oom` |
+| `--namespace` / `--pod-name` | `demo` / `demo-app` | Target |
+| `--output` | `evaluation/results_{classifier}.json` | Results JSON |
 
 #### `run_scenario()` Flow
 
 ```mermaid
 sequenceDiagram
+    autonumber
     participant CLI
-    participant Harness
-    participant Collector
-    participant Preprocessor
-    participant Redactor
-    participant Classifier
-    participant Metrics
-    participant Disk
+    participant Harness as EvaluationHarness
+    participant COLL as collector-svc :8002
+    participant PROC as processor-svc :8003
+    participant REDACT as PassThroughRedactor
+    participant LLM as llm-svc :8004
+    participant METRICS as metrics.py
+    participant DISK
 
     CLI->>Harness: run_scenario(scenario_id, classifier, ns, pod)
-    Harness->>Collector: collect(ns, pod)
-    Collector-->>Harness: RawEvidence
-    Harness->>Preprocessor: process(raw)
-    Preprocessor-->>Harness: EvidencePackage
-    Harness->>Redactor: redact(package)
-    Redactor-->>Harness: EvidencePackage (redacted)
-    Harness->>Classifier: classify(redacted)
-    Note over Classifier: LLM: get_provider().analyse()<br/>Baseline: KeywordClassifier/RuleBasedClassifier
-    Classifier-->>Harness: IncidentReport
-    Harness->>Metrics: evaluate(report, ground_truth[scenario_id])
-    Note over Metrics: Compare category, root cause,<br/>schema validity, remediation keywords
-    Metrics-->>Harness: EvaluationResult
-    Harness->>Disk: save_results(results, output)
+    Harness->>COLL: POST /collect (httpx, timeout 60)
+    COLL-->>Harness: RawEvidence
+    Harness->>PROC: POST /process (httpx, timeout 30)
+    PROC-->>Harness: EvidencePackage
+    Harness->>REDACT: redact(package)
+    Note over REDACT: identity — processor already redacts
+    REDACT-->>Harness: EvidencePackage (redacted)
+    Harness->>LLM: classify(redacted)
+    Note over LLM: LLM: get_provider().analyse() via ServiceLLMProvider<br>Baseline: KeywordClassifier / RuleBasedClassifier
+    LLM-->>Harness: IncidentReport (or dict → _make_report_from_dict)
+    Harness->>METRICS: evaluate(report, ground_truth[scenario_id])
+    Note over METRICS: Compare category, root cause<br>schema validity, remediation keywords
+    METRICS-->>Harness: EvaluationResult
+    Harness->>DISK: save_results(results, output path)
     Harness-->>CLI: EvaluationResult
 ```
 
-#### `EvaluationHarness.run_all()`
+`run_scenario()` flow: collect → preprocess → redact (pass-through) → classify (await if coroutine) → normalise to `IncidentReport` (baselines go through `_make_report_from_dict` with per-category root-cause/fix/command lookup tables) → `evaluate(report, gt_path, latency)`. Scenarios whose ground-truth file is missing are silently skipped.
 
-Iterates over all (or selected) scenarios, calls `run_scenario()` for each, aggregates results, and writes a JSON file with:
-
-```json
-{
-  "classifier": "llm",
-  "scenarios": [...],
-  "results": [EvaluationResult, ...],
-  "aggregate": {
-    "n": 10,
-    "category_accuracy": 1.0,
-    "root_cause_accuracy": 1.0,
-    "schema_valid_rate": 1.0,
-    "mean_latency_s": 6.3,
-    "mean_confidence": 0.90,
-    "mean_evidence_count": 3.2,
-    "mean_remediation_keywords_hit": 4.5
-  }
-}
-```
+`classify_with_baseline` enriches baseline output: matched keywords → " Matched signals: …."; matched rule → " Triggered rule: ….".
 
 ### `evaluation/metrics.py`
 
-#### `EvaluationResult` Fields
+`EvaluationResult` dataclass: `scenario_id`, `root_cause_correct`, `category_correct`, `schema_valid`, `latency_s`, `confidence`, `evidence_count`, `remediation_keywords_hit`.
 
-| Field | Type | How it's computed |
-|-------|------|-------------------|
-| `scenario_id` | `str` | From the ground truth file's `scenario_id` field |
-| `root_cause_correct` | `bool` | Word overlap (words with `len > 4`) between `report.likely_root_cause` and `gt.true_root_cause` — `True` if intersection is non-empty |
-| `category_correct` | `bool` | `report.failure_category == gt.true_failure_category` |
-| `schema_valid` | `bool` | `ReportValidator().is_valid(report.model_dump())` — actually validates, not hardcoded |
-| `latency_s` | `float` | Time from classifier call start to return (measured by harness) |
-| `confidence` | `float` | From `report.confidence` |
-| `evidence_count` | `int` | `len(report.supporting_evidence)` |
-| `remediation_keywords_hit` | `int` (default 0) | Count of `gt.correct_remediation_keywords` found (case-insensitive) in `suggested_fix + recommended_commands + human_verification_steps` |
+Exact formulas:
 
-#### Aggregate Functions
+- **category_correct** — `report.failure_category == gt["true_failure_category"]`.
+- **root_cause_correct** — tokenise both root-cause strings (lowercase, whitespace), keep words with `len > 4`, match iff the word-sets intersect. (Deliberately simple; documented limitation — "environment variable" vs "env var" would miss.)
+- **schema_valid** — `IncidentReport.model_validate(report.model_dump())` round-trips.
+- **remediation_keywords_hit** — count of `gt["correct_remediation_keywords"]` appearing as substrings in `suggested_fix + recommended_commands + human_verification_steps` (the function is named `_remediach_hits` — a preserved typo).
+- **precision(results, attr)** — hits / n. **`recall` is literally `precision`** (every scenario is evaluated; single-label). **f1** — `2pr/(p+r)`, 0 when undefined.
+- **aggregate(results)** — `{n, category_accuracy, root_cause_accuracy, schema_valid_rate, mean_latency_s, mean_confidence, mean_evidence_count, mean_remediation_keywords_hit}`.
 
-The `precision`, `recall`, and `f1_score` functions take a second `attribute` parameter specifying which boolean field to measure (e.g. `"category_correct"`, `"root_cause_correct"`, `"schema_valid"`):
+### Ground Truth Schema (`evaluation/ground_truth/{scenario_id}.json`)
 
-| Function | Signature | Formula | Notes |
-|----------|-----------|---------|-------|
-| `precision(results, attribute)` | `(Iterable[EvaluationResult], str) → float` | `count(getattr(r, attribute) is True) / len(results)` | Fraction of results where the given attribute is True |
-| `recall(results, attribute)` | `(Iterable[EvaluationResult], str) → float` | Same as precision | Alias — in single-label evaluation every scenario is evaluated, so recall == precision |
-| `f1_score(results, attribute)` | `(Iterable[EvaluationResult], str) → float` | `2 * P * R / (P + R)` | Harmonic mean; equals accuracy when P == R |
-| `aggregate(results)` | `(Iterable[EvaluationResult]) → dict` | Computes all metrics + means | Returns dict with keys: `n`, `category_accuracy`, `root_cause_accuracy`, `schema_valid_rate`, `mean_latency_s`, `mean_confidence`, `mean_evidence_count`, `mean_remediation_keywords_hit` |
-
-### Ground Truth Schema
-
-Each `evaluation/ground_truth/*.json` file:
-
-```json
-{
-  "scenario_id": "01-missing-env",
-  "description": "DATABASE_URL environment variable is missing or empty",
-  "true_root_cause": "Missing DATABASE_URL environment variable in deployment spec",
-  "true_affected_component": "demo-app deployment / env vars",
-  "true_failure_category": "config",
-  "true_severity": "critical",
-  "expected_log_patterns": ["Missing required configuration", "DATABASE_URL"],
-  "expected_event_reasons": ["BackOff", "CrashLoopBackOff"],
-  "correct_remediation_keywords": [
-    "DATABASE_URL", "environment variable", "ConfigMap", "Secret", "deployment"
-  ],
-  "notes": "Pod fails to start because lifespan handler requires DATABASE_URL"
-}
-```
+Each of the 10 files carries: `scenario_id`, `description`, `true_root_cause`, `true_affected_component`, `true_failure_category`, `true_severity`, `expected_log_patterns`, `expected_event_reasons`, `correct_remediation_keywords`, `notes`. Full per-scenario values in [Section 21](#21-demo-application--fault-scenarios).
 
 ---
 
-## 18. Demo Application & Fault Scenarios
+## 21. Demo Application & Fault Scenarios
 
 ### Demo App (`demo-app/app/main.py`)
 
-A minimal FastAPI workload that mimics a real microservice with deliberate fault hooks:
+A minimal FastAPI workload (the *target*, never part of the platform) designed to fail realistically:
 
-| Endpoint | Behaviour | Scenario Using It |
-|----------|-----------|-------------------|
-| `GET /health` | Returns `{"status": "ok"}` — liveness probe target | Base manifest |
-| `GET /ready` | Returns `{"ready": true}` unless `DATABASE_URL` contains `"unavailable"` | Scenario 02 |
-| `GET /fault/crash` | Raises `ZeroDivisionError("Deliberate crash for testing")` | (manual testing) |
-| `GET /fault/oom` | Allocates 600 MB in a loop | Scenario 05 (when paired with memory limit) |
-| `GET /fault/slow` | `time.sleep(30)` — causes liveness probe timeout | Scenario 07 |
-| (lifespan) | Raises `RuntimeError` if `DATABASE_URL` missing | Scenarios 01, 02 |
-| (lifespan) | Raises `RuntimeError` if `STARTUP_FAULT=crash` | Scenario 09 |
+- **Startup faults** — `STARTUP_FAULT=crash` → raises `RuntimeError` on boot (scenario 09); empty/unset `DATABASE_URL` → raises `RuntimeError("Missing required configuration: DATABASE_URL")` (scenario 01).
+- **Endpoints** — `GET /health` (liveness), `GET /ready` (readiness; raises "connection refused" when `DATABASE_URL` contains `unavailable` — scenario 02), `GET /fault/crash` (ZeroDivisionError), `GET /fault/oom` (allocates 600 MiB — trips the 32 Mi limit of scenario 05), `GET /fault/slow` (sleeps 30 s — trips the liveness timeout of scenario 07).
 
 ### Ten Fault Scenarios
 
-| # | Scenario | Fault YAML Patch | Expected Category | Expected Severity | Detection |
-|---|----------|------------------|-------------------|-------------------|-----------|
-| 01 | `missing-env` | `DATABASE_URL: ""` | config | critical | Both baselines + LLM |
-| 02 | `db-unavailable` | `DATABASE_URL: postgresql://unavailable:5432/db` | dependency | high | Both baselines + LLM |
-| 03 | `crashloop` | `command: ["/bin/nonexistent"]` | crash | critical | Both baselines + LLM |
-| 04 | `imagepull` | `image: demo-app:nonexistent-tag` | image | critical | Both baselines + LLM |
-| 05 | `oom` | `resources.limits.memory: 32Mi` | resource | high | Both baselines + LLM |
-| 06 | `readiness` | `readinessProbe.httpGet.path: /does-not-exist` | probe | medium | Both baselines + LLM |
-| 07 | `liveness` | `livenessProbe.httpGet.path: /fault/slow` | probe | high | Both baselines + LLM |
-| 08 | `bad-configmap` | `ConfigMap LOG_LEVEL: "INVALID"` | config | medium | Both baselines + LLM |
-| 09 | `app-exception` | `STARTUP_FAULT: "crash"` | crash | high | Both baselines + LLM |
-| 10 | `wrong-port` | `Service targetPort: 9999` | network | medium | **Undetectable from pod evidence** |
+Each lives at `k8s/scenarios/{id}/fault.yaml` (a strategic-merge patch) with truth in `evaluation/ground_truth/{id}.json`:
+
+| # | Scenario | Patch target | Fault | Category | Severity |
+|---|----------|--------------|-------|----------|----------|
+| 01 | missing-env | Deployment/demo-app | `DATABASE_URL: ""` | config | critical |
+| 02 | db-unavailable | Deployment/demo-app | `DATABASE_URL: postgresql://unavailable:5432/db` | dependency | high |
+| 03 | crashloop | Deployment/demo-app | `command: ["/bin/nonexistent"]` | crash | critical |
+| 04 | imagepull | Deployment/demo-app | `image: demo-app:nonexistent-tag`, `imagePullPolicy: Always` | image | critical |
+| 05 | oom | Deployment/demo-app | memory limit `32Mi` | resource | high |
+| 06 | readiness | Deployment/demo-app | readinessProbe path `/does-not-exist` | probe | medium |
+| 07 | liveness | Deployment/demo-app | livenessProbe path `/fault/slow` (delay 1 s) | probe | high |
+| 08 | bad-configmap | **ConfigMap/demo-config** | `LOG_LEVEL: "INVALID"` | config | medium |
+| 09 | app-exception | Deployment/demo-app | env `STARTUP_FAULT: "crash"` | crash | high |
+| 10 | wrong-port | **Service/demo-app-svc** | `targetPort: 9999` (pod listens 8000) | network | medium |
 
 ### Scenario 10 — Why It's Undetectable
 
-Scenario 10 changes the Service's `targetPort` to 9999 (a port no container listens on). The pod itself runs perfectly — `/health` passes, `/ready` passes, no restarts, no error logs. The failure manifests only at the Service/EndpointSlice level: traffic to the Service fails to connect. The collector currently inspects pods, not Services, so neither the LLM nor the baselines can detect this from pod evidence alone. This is a documented limitation (see [Section 24](#24-limitations--future-roadmap)).
+The wrong-port pod is perfectly healthy: no log errors, no event warnings, Ready. The failure exists only in the Service→Pod port mapping, which pod-scoped evidence cannot see. Neither the LLM nor the baselines detect it — a limitation of *evidence collection scope*, honestly documented rather than hidden (detection would need `get_service()`/`get_endpoints()` in the collector).
 
-### `scripts/run_scenario.sh`
+### scenario-svc Mechanics (`services/scenario/app/scenarios.py`)
 
-A bash script that applies a scenario to the k3s cluster:
-
-```bash
-# Apply scenario 01 (missing-env)
-./scripts/run_scenario.sh 01
-
-# Apply all scenarios sequentially
-./scripts/run_scenario.sh all
-
-# Reset to base (remove fault patch)
-./scripts/run_scenario.sh reset
-```
-
-The script uses `kubectl patch --type strategic` (not `kubectl apply`) because `fault.yaml` files are strategic merge patches that lack the `metadata.labels`/`selector` fields required by `kubectl apply`.
+- **Listing** — iterates `k8s/scenarios/*/fault.yaml`; humanises names (`01-missing-env` → "Missing Env"); enriches description/category/severity from the ground-truth JSON.
+- **Apply** — refuses with `ScenarioConflictError` (→ 409) if another scenario is active (in-memory `_active`); parses the patch target from the YAML text (kind + first `metadata.name`, no YAML dependency); runs `kubectl patch {kind}/{name} -n demo --type strategic -p {patch}`; cluster pre-check → 503 when unreachable.
+- **Reset** — `kubectl delete deployment demo-app -n demo --ignore-not-found` → re-apply `k8s/base/{namespace,configmap,deployment,service}.yaml` → `kubectl rollout status deployment/demo-app -n demo --timeout=120s` → clears `_active`.
+- `scripts/run_scenario.sh` offers the same from the CLI (`reset` / `all` / number / name) including base re-application and rollout waiting.
 
 ---
 
-## 19. Kubernetes Integration
+## 22. Kubernetes Integration
 
-### Base Manifests (`k8s/base/`)
+### Base Manifests (`k8s/base/`, namespace `demo`)
 
-| File | Resource | Purpose |
-|------|----------|---------|
-| `namespace.yaml` | `Namespace/demo` | Isolation for the demo workload |
-| `configmap.yaml` | `ConfigMap/demo-config` | `APP_ENV=production`, `LOG_LEVEL=INFO` |
-| `deployment.yaml` | `Deployment/demo-app` | 1 replica, image `demo-app:latest`, pullPolicy `Never`, port 8000, `DATABASE_URL` env, configMapRef, resources 128 Mi / 200 m, liveness `/health`, readiness `/ready` |
-| `service.yaml` | `Service/demo-app-svc` | ClusterIP, port 80 → targetPort 8000 |
+`namespace.yaml` (`demo`), `configmap.yaml` (`demo-config`: `APP_ENV=development`, `LOG_LEVEL=INFO`), `deployment.yaml` (`demo-app`, 1 replica, image `demo-app:latest` + `imagePullPolicy: Never`, port 8000, `DATABASE_URL=sqlite:///./test.db` + `envFrom` configmap, requests 64Mi/100m limits 128Mi/200m, liveness `/health`, readiness `/ready`), `service.yaml` (`demo-app-svc`, ClusterIP 80→8000).
 
-### Analyser Manifests (`k8s/analyser/`)
+### Platform Manifests (`k8s/services/`, namespace `analyser`)
 
-| File | Resource | Purpose |
-|------|----------|---------|
-| `configmap.yaml` | `ConfigMap/analyser-config` | `LLM_PROVIDER`, `LLM_MODEL`, `ENABLE_SCENARIOS` |
-| `rbac.yaml` | `ServiceAccount/analyser-sa` + `ClusterRole/pod-reader` + `ClusterRoleBinding` | Read-only access to pods, pods/log, events, namespaces |
-| `deployment.yaml` | `Deployment/analyser` | 1 replica, image `analyser:latest`, port 8000, configMapRef, optional secrets for API keys, resources 512 Mi / 500 m, liveness + readiness `/health` |
-| `service.yaml` | `Service/analyser-svc` | ClusterIP, port 80 → targetPort 8000 |
+Twelve files: `namespace.yaml`, two RBAC files, `redis.yaml`, and one Deployment+Service per platform service. Key points:
+
+- **gateway** — NodePort **30080**; **frontend** — NodePort **30030**. Everything else is ClusterIP.
+- **collector** — `serviceAccountName: collector-sa`.
+- **scenario** — `serviceAccountName: scenario-sa`.
+- **reports** — `replicas: 1`, `strategy: Recreate`, PVC `reports-data` (256Mi, RWO) at `/data` — SQLite single-writer discipline at the orchestrator level.
+- **llm** — provider config via ConfigMap `llm-config`; API keys via Secret `llm-secrets` (all keys `optional: true`).
+- All deployments: `imagePullPolicy: IfNotPresent`, `/health` liveness+readiness probes, modest resource requests/limits.
+
+Contract drift is tested: `tests/unit/test_k8s_manifests.py::TestContractsDrift` asserts `namespace.yaml` and both RBAC files are **byte-identical** to the `contracts/infra/k8s/` SSOT copies.
 
 ### RBAC Permissions
 
-The analyser's `ClusterRole` grants read-only access to the resources it needs:
+| ServiceAccount | Role | Scope | Verbs |
+|----------------|------|-------|-------|
+| `collector-sa` | ClusterRole `pod-reader` | cluster-wide (must read pods in *any* namespace) | `pods`, `pods/log`, `events`, `namespaces` — **get/list/watch only**; no secrets, no configmaps, no writes |
+| `scenario-sa` | Role `deployment-patcher` | namespace `demo` only | `deployments` (apps), `services`, `configmaps` — get/list/patch/update; `namespaces` — get. **No delete** |
 
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: pod-reader
-rules:
-  - apiGroups: [""]
-    resources: ["pods", "pods/log", "events", "namespaces"]
-    verbs: ["get", "list", "watch"]
-```
-
-No write permissions. The analyser cannot modify, delete, or create any Kubernetes resource. This is a security boundary: even if the analyser container is compromised, it cannot damage the cluster.
-
-### Scenario Manifests as Strategic Merge Patches
-
-Each `k8s/scenarios/*/fault.yaml` is a strategic merge patch — a partial resource definition that kubectl merges into the existing resource. Example (scenario 05 — OOM):
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: demo-app
-  namespace: demo
-spec:
-  template:
-    spec:
-      containers:
-        - name: demo-app
-          resources:
-            limits:
-              memory: "32Mi"    # Was 128Mi in base; patched down to trigger OOM
-```
-
-The `run_scenario.sh` script extracts the `kind` and `metadata.name` from the YAML and issues:
-
-```bash
-kubectl patch deployment/demo-app -n demo --type strategic -p "$(cat fault.yaml)"
-```
+The manifest comments admit the v1 caveat: scenario-svc's *reset* path uses the mounted kubeconfig (cluster-admin equivalent) and should be tightened in production.
 
 ---
 
-## 20. Data Flow Traces
+## 23. Data Flow Traces
 
-### Trace 1: Scenario 01 (missing-env) — DeepSeek LLM
+### Trace 1: Scenario 01 (missing-env) — Full v2 Job, DeepSeek Provider
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant User
-    participant API as FastAPI /analyse
-    participant Coll as KubernetesCollector
-    participant Pre as LogPreprocessor
-    participant Red as LogRedactor
-    participant DS as DeepSeekProvider
-    participant Persist as save_report()
+    participant Browser
+    participant GW as gateway :8000
+    participant ORCH as orchestrator :8001
+    participant REDIS as Redis
+    participant COLL as collector :8002
+    participant PROC as processor :8003
+    participant LLM as llm :8004 / DeepSeek
+    participant REPO as reports :8005
 
-    User->>API: POST /analyse/pod/demo/demo-app
-    API->>API: request_id = a3f9c2e1
-    API->>Coll: collect("demo", "demo-app")
-    Coll->>Coll: _pod_exists("demo", "demo-app") = false
-    Coll->>Coll: find_pod_by_label("demo", "app=demo-app")
-    Coll-->>Coll: resolved = "demo-app-bd594d4bd-87nhj"
-    Coll->>Coll: kubectl logs ... --tail=500 --timestamps=true
-    Coll->>Coll: kubectl logs ... --previous --tail=500 --timestamps=true
-    Coll->>Coll: kubectl describe pod ...
-    Coll->>Coll: kubectl get events --sort-by=.metadata.creationTimestamp
-    Coll->>Coll: kubectl get pod -o jsonpath={.status.containerStatuses[0].restartCount}
-    Coll-->>API: RawEvidence(restart_count=7, current_logs="...", previous_logs="RuntimeError: Missing DATABASE_URL", container_states={...})
-    API->>Pre: process(raw)
-    Pre->>Pre: Filter noise (GET /health, /ready, /metrics)
-    Pre->>Pre: Keep signal: "RuntimeError", "Missing", "DATABASE_URL"
-    Pre->>Pre: Add 3-line context window around signal
-    Pre->>Pre: Dedup, cap at 100 lines
-    Pre-->>API: EvidencePackage(current_logs="RuntimeError: Missing required configuration: DATABASE_URL\n...", previous_logs="...", pod_status_summary="...", k8s_events_filtered="...", restart_count=7)
-    API->>Red: redact(package)
-    Red->>Red: Mask any sk-*, sk-ant-*, postgres://*, Bearer *, emails
-    Red-->>API: EvidencePackage (redacted)
-    API->>DS: analyse(redacted)
-    DS->>DS: build_prompt(package) → (system, user)
-    DS->>DS: Append _JSON_INSTRUCTION_TEMPLATE + schema to system prompt
-    DS->>DS: POST https://api.deepseek.com/v1/chat/completions (timeout=60s)
-    Note over DS: model: deepseek-chat<br/>response_format: {"type": "json_object"}
-    DS-->>API: IncidentReport(category=config, severity=critical, confidence=0.95)
-    API->>Persist: save_report(report)
-    Persist->>Persist: Write reports/1721550600_inc-a3f9c2e1b4d8.json
-    Persist-->>API: ok
-    API-->>User: 200 OK + IncidentReport JSON
+    Browser->>GW: POST /api/jobs {"namespace":"demo","pod_name":"demo-app"}
+    GW->>ORCH: proxy POST /jobs (byte-for-byte)
+    ORCH->>ORCH: job_id = new_id() (UUIDv7)
+    ORCH->>REDIS: HSET job:{job_id} status=queued (TTL 24h) · LPUSH job:queue
+    ORCH->>REPO: POST /jobs {status:"queued"} (best-effort archive, timeout 10)
+    ORCH-->>GW: 202 {"job_id":"01938a7b-…","status":"queued"}
+    GW-->>Browser: 202 job_id
+    Browser->>GW: EventSource /api/jobs/{job_id}/stream
+    GW->>ORCH: proxy SSE stream
+    ORCH-->>GW: replay: event: stage {status:"queued", stage:""}
+    GW-->>Browser: SSE stage (queued)
+
+    Note over ORCH: background asyncio task starts
+    ORCH->>ORCH: transition → collecting
+    ORCH->>REDIS: PUBLISH job:{id}:events (stage: "Collecting evidence for demo/demo-app")
+    ORCH->>COLL: POST /collect (timeout 60)
+    Note over COLL: kubectl: pod-exists miss → label resolve app=demo-app<br>kubectl logs --previous --tail=500 · kubectl describe pod<br>kubectl get events · jsonpath restartCount=3
+    COLL-->>ORCH: RawEvidence (logs: "FATAL: DATABASE_URL not set", "RuntimeError: Missing required configuration")
+    ORCH->>ORCH: transition → processing · PUBLISH
+    ORCH->>PROC: POST /process (timeout 30)
+    Note over PROC: signal lines ±3 context · dedup · ≤100 lines<br>redactor: no secrets in this scenario's evidence
+    PROC-->>ORCH: EvidencePackage
+    ORCH->>ORCH: transition → llm_call · PUBLISH
+    ORCH->>LLM: POST /analyse (timeout 60)
+    LLM->>LLM: build_prompt(package) → (system, user)
+    Note over LLM: DeepSeek: json_object mode, schema + example in prompt
+    LLM-->>ORCH: IncidentReport {category:config, severity:critical, confidence:0.95}
+    ORCH->>ORCH: transition → persisting · PUBLISH
+    ORCH->>REPO: POST /reports (timeout 30)
+    Note over REPO: INSERT incidents + UPDATE analysis_jobs (single transaction)
+    REPO-->>ORCH: {incident_id: "01938a7c-…"}
+    ORCH->>ORCH: store.complete(job_id, incident_id, latency_ms=7240)
+    ORCH->>REDIS: PUBLISH job:{id}:events (event:done, incident_id, category, severity, latency_ms)
+    ORCH->>REPO: POST /jobs {status:"done", incident_id, latency_ms} (best-effort archive)
+    ORCH-->>GW: SSE done event
+    GW-->>Browser: SSE done → EventSource closes, success card links to report
+    Browser->>GW: GET /api/reports/{incident_id}
+    GW->>REPO: proxy GET /reports/{id}
+    REPO-->>GW: full IncidentReport JSON
+    GW-->>Browser: report rendered
 ```
 
-### Trace 2: Scenario 05 (OOM) — Rule-Based Baseline
+### Trace 2: Redaction Before LLM (what a secret looks like mid-pipeline)
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant Harness
-    participant Coll as KubernetesCollector
-    participant Pre as LogPreprocessor
-    participant Red as LogRedactor
-    participant Rule as RuleBasedClassifier
-    participant Metrics
+    participant COLL as collector-svc
+    participant PROC as processor-svc
+    participant LLM as llm-svc
 
-    Harness->>Coll: collect("demo", "demo-app")
-    Coll-->>Harness: RawEvidence(pod_status="Last State: Terminated, Reason: OOMKilled, Exit Code: 137", events="Killing container with id demo-app", restart_count=4)
-    Harness->>Pre: process(raw)
-    Pre-->>Harness: EvidencePackage
-    Harness->>Red: redact(package)
-    Red-->>Harness: EvidencePackage (redacted)
-    Harness->>Rule: classify(package)
-    Rule->>Rule: _extract_reasons(pod_status) → "OOMKilled"
-    Rule->>Rule: _image_rule: no match (no ImagePullBackOff)
-    Rule->>Rule: _resource_rule: OOMKilled in reasons + "Killing" in events → MATCH
-    Rule-->>Harness: IncidentReport(category=resource, confidence=0.6)
-    Harness->>Metrics: evaluate(report, ground_truth["05-oom"])
-    Note over Metrics: category_correct = True<br/>root_cause_correct = True (word overlap on "memory")<br/>schema_valid = True<br/>remediation_keywords_hit = 4/5
-    Metrics-->>Harness: EvaluationResult
+    COLL-->>PROC: RawEvidence.current_logs =<br>"Connecting to postgresql://admin:s3cr3t@db:5432/prod"<br>"Authorization: Bearer sk-ant-api03-xyz123abc..."<br>"RuntimeError: Missing DATABASE_URL"
+
+    PROC->>PROC: signal lines +/-3 context · dedup
+    PROC->>PROC: Pattern 5: (postgres|mysql|mongodb|redis)://<br>--> [DB_URL=REDACTED]
+    PROC->>PROC: Pattern 3: sk-ant-… (Anthropic key)<br>--> [ANTHROPIC_KEY=REDACTED]
+    PROC->>PROC: Pattern 6: Authorization|Bearer + token<br>--> [AUTH_HEADER=REDACTED]
+
+    PROC-->>LLM: EvidencePackage.current_logs =<br>"Connecting to [DB_URL=REDACTED]"<br>"Authorization: [AUTH_HEADER=REDACTED]"<br>"RuntimeError: Missing DATABASE_URL"
+
+    Note over LLM: LLM sees the error but never<br>the credentials. Redis hashes carry<br>only stage metadata, never logs.
 ```
 
-### Trace 3: Redaction Before LLM
+### Trace 3: Late SSE Subscriber (replay semantics)
 
 ```mermaid
 sequenceDiagram
-    participant Pre as Preprocessor
-    participant Red as Redactor
-    participant LLM as LLM Provider
+    participant TabA as Browser Tab A<br>(subscribed early)
+    participant GW as gateway
+    participant ORCH as orchestrator
+    participant REDIS as Redis
+    participant TabB as Browser Tab B<br>(subscribes late: job done 0.8s ago)
 
-    Pre-->>Red: EvidencePackage(current_logs=[<br/>"Connecting to postgresql://admin:s3cr3t@db:5432/prod",<br/>"Authorization: Bearer sk-ant-api03-xyz123abc...",<br/>"RuntimeError: Missing DATABASE_URL"<br/>], previous_logs="...", pod_status_summary="...", k8s_events_filtered="...", restart_count=7)
-    Red->>Red: Pattern 5: (postgres|mysql|mongodb|redis)://[^\s'"]+
-    Red->>Red: Replace with [DB_URL=REDACTED]
-    Red->>Red: Pattern 3: sk-ant-[A-Za-z0-9_\-]{20,}
-    Red->>Red: Replace with [ANTHROPIC_KEY=REDACTED]
-    Red-->>LLM: EvidencePackage(current_logs=[<br/>"Connecting to [DB_URL=REDACTED]",<br/>"Authorization: Bearer [ANTHROPIC_KEY=REDACTED]",<br/>"RuntimeError: Missing DATABASE_URL"<br/>], ...)
-    Note over LLM: LLM sees the error<br/>but never the credentials
+    Note over ORCH,REDIS: Job completed. Redis hash: status="done"
+
+    TabB->>GW: EventSource /api/jobs/{job_id}/stream
+    GW->>ORCH: proxy SSE stream
+    ORCH->>ORCH: reads job hash -> status="done" is terminal
+    ORCH-->>GW: event: done {incident_id, latency_ms}<br>(replay omits failure_category/severity -<br>fields are optional in TS types for this reason)
+    GW-->>TabB: SSE done -> stream closes immediately
+
+    Note over TabB: had the job been mid-flight<br>a replay stage event from current hash<br>would precede live pub/sub events
 ```
 
 ---
 
-## 21. Deployment & Infrastructure
+## 24. Deployment & Infrastructure
+
+### Docker Compose (reference topology)
+
+See [Section 6](#6-build--tooling). The Compose file mirrors `contracts/infra/docker-compose.yml` (the SSOT) with repo-relative build contexts; port assignments (3000, 8000–8006, 6379, 8080) are contractual and match every OpenAPI `servers:` URL.
 
 ### AWS EC2 Deployment
 
@@ -1732,142 +1849,128 @@ sequenceDiagram
 |--------|-------|
 | **Region** | eu-west-2 (London) |
 | **Instance type** | t3.small (2 vCPUs, 1.9 GB RAM — free-tier eligible) |
-| **AMI** | ami-0fa24142692dd0fff (Ubuntu 22.04 LTS) |
-| **Public IP** | 18.133.255.70 |
-| **Security group** | Ports 22 (SSH), 8000 (analyser), 8001 (demo-app) |
-| **SSH key** | `k8s-llm-analyser-key.pem` |
+| **AMI** | Ubuntu 22.04 LTS |
+| **Public IP** | `18.133.255.70` |
+| **Security group** | Ports 22 (SSH), 8000 (gateway), 3000 (frontend) |
 | **Docker** | 29.6.2 |
 | **Docker Compose** | v5.3.1 |
 | **K3s** | v1.36.2+k3s1 |
 
-### Why K3s Instead of Minikube
+The dissertation deployment runs on a single EC2 instance: **k3s** for the cluster, the Compose stack for the platform, k3s's kubeconfig copied to `~/.kube/config` and bind-mounted into collector/scenario. The gateway's public spec lists `http://18.133.255.70:8000` as a server.
 
-Minikube requires ~2 GB of RAM for its VM; the t3.small has 1.9 GB total. K3s is a lightweight Kubernetes distribution that runs directly on the host (no VM) using containerd, consuming ~512 MB. All system pods (coredns, traefik, metrics-server, local-path-provisioner) run healthy on the t3.small.
+### Why k3s Instead of Minikube
+
+Minikube requires ~2 GB of RAM for its VM; the t3.small has 1.9 GB total. k3s is a lightweight Kubernetes distribution that runs directly on the host (no VM) using containerd, consuming ~512 MB. All system pods (coredns, traefik, metrics-server, local-path-provisioner) run healthy on the t3.small. Moreover, k3s's containerd runtime and SQLite-backed etcd option make it close to production infrastructure — for a dissertation about *production incident response*, the closer-to-metal choice matters.
 
 ### Container-to-Cluster Connectivity
 
-The analyser container needs to reach the k3s API server. This is achieved by:
+collector/scenario containers run kubectl against the host's cluster via two read-only bind mounts: `${HOME}/.kube/config` and `${HOME}/.minikube` (cert files). In-cluster deployment uses the ServiceAccounts instead ([Section 22](#22-kubernetes-integration)).
 
-1. Copying `/etc/rancher/k3s/k3s.yaml` to `/root/.kube/config` on the host
-2. Replacing the localhost API URL with the host's private IP
-3. Bind-mounting `/root/.kube/config` into the analyser container at `/root/.kube/config`
-4. The analyser's kubectl subprocess reads `KUBECONFIG` (default `~/.kube/config`) and connects
-
-A subtle issue: Docker creates a **directory** at a bind-mount point if the source file does not exist at container start time. The fix is to ensure `/root/.kube/config` exists on the host before `docker compose up`, or to recreate the container with `--force-recreate` after creating the file.
+**Subtle gotcha**: Docker creates a **directory** at a bind-mount point if the source file does not exist at container start time. Ensure `/root/.kube/config` exists on the host before `docker compose up`, or recreate the container with `--force-recreate` after creating the file.
 
 ### GitHub Container Registry
 
-`.github/workflows/docker.yml` builds and pushes the analyser image to GHCR on every push to `main`:
+`docker.yml` publishes 8 images to `ghcr.io/<owner>/k8s-llm-incident-analyser/<name>` (7 `*-svc` images + frontend; demo-app is built but not published) on every push to `main`, with `type=gha` buildkit caching per image.
 
 ```yaml
+# .github/workflows/docker.yml — publish job excerpt
 publish:
-  needs: build-analyser
+  needs: build-services
   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
   runs-on: ubuntu-latest
+  permissions:
+    contents: read
+    packages: write
   steps:
     - uses: docker/login-action@v3
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    - uses: docker/build-push-action@v5
+    - uses: docker/build-push-action@v6
       with:
-        context: .
         push: true
-        tags: ghcr.io/${{ github.repository }}:latest
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        tags: ghcr.io/${{ github.repository }}/${{ matrix.name }}:latest
+        cache-from: type=gha,scope=${{ matrix.name }}
+        cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 ```
 
 The `GITHUB_TOKEN` is automatically provided by GitHub Actions; no additional secrets are needed for GHCR auth.
 
+### CI Pipeline (`.github/workflows/ci.yml`)
+
+- **Triggers**: push/PR to `main`.
+- **Job `test`** — matrix: Python 3.12 × 9 suites (`shared`, `collector`, `processor`, `llm`, `reports`, `orchestrator`, `gateway`, `scenario`, `root`). Steps: checkout → setup-python (pip cache) → `pip install -e ./services/shared` + requirements + fakeredis → (root suite only: `ruff check`) → per-suite pytest; root runs `pytest tests -v` with `LLM_PROVIDER=mock`.
+- **Job `frontend`** — Node 22: `npm ci` → `npm run generate:types` (contract → TS) → `npm run lint` → `npm run build`.
+
 ---
 
-## 22. Testing & Quality Assurance
+## 25. Testing & Quality Assurance
 
 ### Test Pyramid
 
 ```mermaid
 flowchart TD
-    Unit["Unit Tests\n330 tests\n14 files\n~ 4 s"]
-    Integration["Integration Tests\n9 tests\n1 file\n~ 1 s"]
-    E2E["End-to-End Tests\n(manual, on EC2)\n10 scenarios × 3 classifiers"]
-    Unit --> Integration
-    Integration --> E2E
+    E2E["E2E smoke — scripts/e2e_smoke.sh<br>live cluster + full compose stack"]
+    INT["Integration — tests/integration<br>5 real FastAPI apps composed in-process"]
+    UNIT["Unit — 8 service suites + tests/unit + frontend<br>~560 tests; mocked kubectl / fakeredis / MockTransport; 20 Vitest files"]
+    E2E --- INT --- UNIT
 ```
 
-### Unit Test Breakdown
+**564 Python test functions** across 9 suites, plus 20 Vitest files. Every suite runs with `asyncio_mode = auto`.
 
-| Test File | Tests | What it Covers |
-|-----------|-------|----------------|
-| `test_api.py` | 4 | Health endpoint, analyse pipeline with mocks, error handling → 500 |
-| `test_baselines_scenarios.py` | 96 | All 10 scenarios × keyword + rulebased classification, detailed classification, harness integration |
-| `test_collector.py` | 15 | kubectl log/describe/events calls, tail/previous flags, timeout, pod resolution by label, `collect()` orchestration |
-| `test_demo_app.py` | 5 | Demo app health, ready (ok + unavailable raises), fault/crash, fault/oom, lifespan errors |
-| `test_harness.py` | 11 | classify_with_baseline (dict/keyword/rulebased), classify_with_llm, run_scenario, save_results, EvaluationHarness.run_all |
-| `test_k8s_manifests.py` | 17 | Base manifests valid, scenario dirs exist, all fault YAMLs valid, specific fault assertions |
-| `test_keyword.py` | 29 | Weighted scoring, disambiguation, classify_detailed, KeywordClassifier class |
-| `test_llm_providers.py` | 18 | Abstract base, Mock heuristic, factory selection for all 4 providers, case-insensitive |
-| `test_metrics.py` | 22 | EvaluationResult, evaluate (category/root cause/schema/latency/confidence/evidence/keywords), aggregate |
-| `test_models.py` | 15 | EvidenceItem sources, IncidentReport constraints, extra fields ignored, JSON schema export |
-| `test_persistence.py` | 14 | save_report, list_reports, get_report, file naming, missing directory |
-| `test_preprocessor.py` | 14 | Noise filtering, signal detection, context window, dedup, max lines, event extraction |
-| `test_prompts.py` | 8 | build_prompt returns tuple, system rules, user fields, JSON schema in prompt |
-| `test_redactor.py` | 13 | All 7 PII patterns, no false positives, empty strings, multiple secrets, all EvidencePackage fields |
-| `test_rulebased.py` | 36 | All 7 rules, priority ordering, detailed classification, explain() method |
-| `test_validator.py` | 13 | validate_dict/string, rejects bad category/severity/confidence/evidence, get_schema |
-| **Total** | **339** | |
+### Suite Breakdown
 
-### Integration Tests
+| Suite | Location | Highlights |
+|-------|----------|-----------|
+| shared | `services/shared/tests/` | Contract parity: every enum literal asserted present in `schema.sql`; UUIDv7 format; RFC 7807 shape; all model constraints |
+| gateway | `services/gateway/tests/` | Full upstream emulation via `httpx.MockTransport`; proxy pass-through; SSE byte-exactness; 429 problem; 502 mapping; CORS |
+| orchestrator | `services/orchestrator/tests/` | fakeredis; stage-event order `[collecting, processing, llm_call, persisting, done]`; per-stage failure parametrisation; archival-failure resilience; live SSE fanout |
+| collector | `services/collector/tests/` | Every kubectl invocation's exact args asserted (`--tail=500`, `--timestamps`, `--previous`, jsonpaths, label resolution) |
+| processor | `services/processor/tests/` | Context-window edges, dedup, truncation, all 7 redaction patterns + false-positive guards |
+| llm | `services/llm/tests/` | Mock heuristics per category; factory (case-insensitivity, unknown→mock); mocked OpenAI/Anthropic/DeepSeek success/refusal/truncation/content-filter; prompt fallbacks |
+| reports | `services/reports/tests/` | Real SQLite in tmp dirs; upsert COALESCE semantics; stats aggregates; CHECK-constraint rejection; `updated_at` trigger |
+| scenario | `services/scenario/tests/` | Runs against the real `k8s/scenarios` dir (asserts exactly 10); apply→409→reset→re-apply; patch-target parser |
+| root unit | `tests/unit/` | Metrics formulas, harness orchestration, both baselines (incl. 100% accuracy on the 9 detectable fixture scenarios), k8s manifest validation + contracts-drift byte-identity, demo-app endpoints |
 
-`tests/integration/test_pipeline.py` — 9 tests covering the full pipeline composition with mocked kubectl and LLM:
+### Integration Tests (`tests/integration/test_pipeline.py`)
 
-- Full pipeline (config/resource/dependency scenarios) end-to-end
-- Redaction occurs before LLM call (verified by inspecting prompt)
-- Validator accepts mock output
-- Validator rejects missing required field
-- JSON roundtrip (IncidentReport → JSON → IncidentReport)
-- API end-to-end via TestClient (full pipeline, empty logs)
+Composes the **real** FastAPI apps of collector, processor, llm (`LLM_PROVIDER=mock`), reports (tmp `DATABASE_PATH`), and orchestrator **fully in-process** — no Docker, no cluster, no real Redis:
 
-### Test Fixtures
+- `RouterTransport` routes httpx calls by hostname to per-service `ASGITransport`s; `fakeredis.aioredis.FakeRedis` stands in for Redis.
+- `subprocess.run` is patched with 7 ordered kubectl-output fixtures per scenario (all 10 scenarios have handcrafted outputs: OOMKilled exit 137, ContainerCannotRun exit 127, ReadinessProbeFailed 404, …).
+- Asserts the whole loop: `POST /jobs` → 202 (36-char UUID) → poll → `done` with `incident_id` → reports-svc returns the report with the expected category (08 and 10 expectedly classify `unknown` with the mock provider) → job archived in SQLite (`GET /jobs?status=done`).
 
-`tests/fixtures/scenario_evidence.py` — 10 realistic `EvidencePackage` objects, one per scenario, derived from:
+### End-to-End Smoke (`scripts/e2e_smoke.sh`)
 
-- Ground truth `expected_log_patterns`
-- Demo app source code (the exact exceptions raised)
-- Actual k3s `kubectl describe` output format
-- Actual k3s `kubectl get events` output format
+Against the live stack: gateway health → scenario list contains `05-oom` → reset → apply → sleep 20 → create job → sample the SSE stream → poll to `done` (≤150 s) → fetch report and assert `failure_category == "resource"` and ≥1 evidence item → `GET /api/stats` sanity → reset (also trapped on EXIT). Configurable via `GATEWAY_URL`, `SCENARIO`, `EXPECTED_CATEGORY`, etc.
 
-These fixtures allow the baselines and LLM to be tested against all 10 scenarios without a running cluster, making the test suite hermetic and fast (~ 5 s total).
+### Per-Suite Test Counts
 
-### Coverage
+| Suite | Location | Test files | Focus |
+|-------|----------|-----------|-------|
+| shared | `services/shared/tests/` | 1 | Contract parity: enums ↔ `schema.sql`, UUIDv7, RFC 7807, all model constraints |
+| gateway | `services/gateway/tests/` | 2 | MockTransport upstream emulation; proxy pass-through; SSE byte-exactness; 429/502/CORS |
+| orchestrator | `services/orchestrator/tests/` | 3 | fakeredis stage-event order; per-stage failure parametrisation; archival-failure resilience |
+| collector | `services/collector/tests/` | 2 | Every kubectl arg asserted (`--tail=500`, `--timestamps`, `--previous`, jsonpaths, label resolution) |
+| processor | `services/processor/tests/` | 3 | Context-window edges, dedup, truncation; all 7 redaction patterns + false-positive guards |
+| llm | `services/llm/tests/` | 4 | Mock heuristics per category; factory (case-insensitive, unknown→mock); OpenAI/Anthropic/DeepSeek success/refusal/truncation mocks |
+| reports | `services/reports/tests/` | 2 | Real SQLite in tmp dirs; upsert COALESCE semantics; stats aggregates; CHECK-constraint rejection |
+| scenario | `services/scenario/tests/` | 2 | Real `k8s/scenarios` dir (asserts 10); apply→409→reset→re-apply; patch-target parser |
+| root unit | `tests/unit/` | 7 | Metrics, harness, both baselines (100% on 9 detectable fixtures), manifest validation, contracts-drift |
+| integration | `tests/integration/` | 1 | 5 real apps composed in-process with fakeredis + mocked kubectl; all 10 scenario outputs |
+| frontend | `src/__tests__/` | 20 | API error precedence, SSE events, component rendering, pipeline timeline, status badges, charts |
 
-| Module | Line Coverage |
-|--------|---------------|
-| `app/models/` | 98 % |
-| `app/core/collector.py` | 89 % |
-| `app/core/preprocessor.py` | 94 % |
-| `app/core/redactor.py` | 100 % |
-| `app/core/prompts.py` | 92 % |
-| `app/core/validator.py` | 97 % |
-| `app/core/persistence.py` | 95 % |
-| `app/core/llm/` | 82 % (provider classes partially mocked) |
-| `app/api/` | 88 % |
-| `evaluation/baselines/` | 96 % |
-| `evaluation/metrics.py` | 93 % |
-| `evaluation/harness.py` | 85 % |
-| **Overall** | **92 %** |
+**564 Python test functions** across 9 suites, plus 20 Vitest files. Every Python suite runs with `asyncio_mode = auto`.
 
-### CI Pipeline
-
-`.github/workflows/ci.yml`:
+### CI Pipeline (`.github/workflows/ci.yml`)
 
 | Step | Command | Gate |
 |------|---------|------|
-| Install deps | `pip install -r requirements.txt -r requirements-dev.txt` | — |
-| Lint | `ruff check . --extend-ignore E501` | Must pass (exit 0) |
-| Unit tests | `pytest tests/unit --cov=app --cov=evaluation --cov-report=term-missing --cov-fail-under=80` | Coverage ≥ 80 % |
-| Integration tests | `pytest tests/integration -v` with `LLM_PROVIDER=mock` | Must pass |
+| Install deps | `pip install -e ./services/shared` + `pip install -r requirements.txt -r requirements-dev.txt` + `pip install fakeredis` | — |
+| Lint | `ruff check . --extend-ignore E501` (root-suite job only) | Must pass (exit 0) |
+| Unit tests (9 suites) | Matrix: Python 3.12 × 9 jobs (`shared` through `root`); per-suite `python -m pytest -q` | Must pass |
+| Frontend test | Node 22: `npm ci` → `npm run generate:types` → `npm run lint` → `npm run build` | Must pass |
 
 ### Linting Rules
 
@@ -1882,9 +1985,13 @@ Ruff is configured with `select = ["E", "F", "I", "N", "W"]`:
 | `W` | pycodestyle warnings | deprecated features |
 | `E501` (ignored) | line too long | Handled by formatter, not enforced |
 
+Frontend: eslint `next/core-web-vitals` + `next/typescript`. Coverage via `make test-cov` (`--cov=evaluation` at root, `--cov=app` per service).
+
 ---
 
-## 23. Evaluation Results
+## 26. Evaluation Results
+
+Measured end-to-end on k3s (AWS EC2) with DeepSeek `deepseek-chat`; pipeline semantics are identical in v2, and the harness drives the same collect→process→analyse stages (now over HTTP via `evaluation/services.py`).
 
 ### End-to-End Results on k3s (AWS EC2) with DeepSeek LLM
 
@@ -1913,13 +2020,13 @@ Ruff is configured with `select = ["E", "F", "I", "N", "W"]`:
 
 3. **Scenario 10 is the honest failure mode.** Neither the LLM nor the baselines detect the wrong-port scenario from pod evidence, because the pod is healthy. This is a limitation of the evidence collection scope, not the classifiers. Documenting this is more valuable than hiding it.
 
-4. **Schema validity is 100 % across all classifiers.** This is because the baselines use `_make_report_from_dict()` which constructs a valid `IncidentReport` directly, and the LLM providers use structured-output APIs (or schema-injected prompts for DeepSeek) that guarantee schema conformance.
+4. **Schema validity is 100 % across all classifiers.** The baselines construct `IncidentReport`s directly in code, and the LLM providers use structured-output APIs (or schema-injected prompts for DeepSeek) that guarantee conformance.
 
-5. **Confidence calibration differs.** The LLM reports 0.85–0.95 confidence; the keyword baseline reports 0.55–0.85 (capped at 0.9); the rule-based baseline reports 0.6–0.85. The LLM's confidence is better calibrated to actual correctness (high confidence always co-occurs with correct classification in the test set).
+5. **Confidence calibration differs.** The LLM reports 0.85–0.95; the keyword baseline 0.55–0.85 (capped 0.9); the rule-based baseline 0.6–0.85 (capped 0.85). The LLM's confidence is better calibrated to actual correctness (high confidence always co-occurs with correct classification in the test set).
 
 ---
 
-## 24. Limitations & Future Roadmap
+## 27. Limitations & Future Roadmap
 
 ### Current Limitations
 
@@ -1927,29 +2034,34 @@ Ruff is configured with `select = ["E", "F", "I", "N", "W"]`:
 |------------|--------|----------|
 | **Scenario 10 (wrong-port) undetectable** | Collector inspects pods only, not Services/EndpointSlices | Medium — affects 1/10 scenarios |
 | **No Service/Endpoint/ConfigMap collection** | ConfigMap and Service misconfigurations require separate collection methods | Medium |
-| **No retry/backoff in LLM providers** | Transient API failures (429, 503) cause immediate 500 | Medium |
-| **No cost tracking** | API spend is not measured per request | Low |
-| **File-based persistence** | Does not scale beyond a single container; no indexing | Low (acceptable for dissertation) |
+| **No retry/backoff in LLM providers** | Transient API failures (429, 503) cause immediate job failure | Medium |
+| **No authentication on the public API** | Anyone with network access can trigger analysis or inject faults | Medium (acceptable for dissertation; production would add API key/OIDC) |
+| **CORS wildcard** | `allow_origins=["*"]` is insecure for production | Low (configurable) |
+| **scenario-svc active-state is in-memory** | Service restart forgets the applied scenario; the 409 guard can be bypassed by a restart (and a second replica would break it) | Low–Medium |
+| **`job:queue` is written but never consumed** | LPUSHed on every job; no BRPOP consumer in v1 — dead weight until worker scaling lands | Low (deliberate seed for v2) |
+| **SQLite single-writer** | reports-svc pinned to 1 replica; no horizontal scale | Low (acceptable at ~10 analyses/day) |
 | **`recall()` is an alias for `precision()`** | Single-label classification makes them identical; the naming is misleading | Low |
-| **CORS wildcard in production** | `allow_origins=["*"]` is insecure for production | Low (configurable) |
-| **No authentication on API** | Anyone with network access can trigger analysis | Medium (acceptable for dissertation; production would add API key or OIDC) |
-| **Demo app has no LOG_LEVEL validation** | Scenario 08 (bad-configmap) sets `LOG_LEVEL=INVALID` but the demo app doesn't validate it, so the pod may not fail as expected | Low |
-| **No semantic similarity in root-cause matching** | `_root_cause_matches()` uses word overlap; "environment variable" vs "env var" would fail to match | Low (documented) |
+| **No semantic similarity in root-cause matching** | Word-overlap metric: "environment variable" vs "env var" fails to match | Low (documented) |
+| **`KUBECTL_LOG_TAIL` env var is dead config** | Compose sets it; the collector's tail is hardcoded to 500 | Low |
+| **SSE replayed terminal event is thinner than live** | Replay omits `failure_category`/`severity` (present in live `SseDoneEvent`) | Low (TS types mark them optional) |
+| **Demo app has no LOG_LEVEL validation** | Scenario 08 sets `LOG_LEVEL=INVALID` but the app doesn't validate it, so the pod may not fail as expected | Low |
+| **No cost tracking** | LLM API spend is not measured per request | Low |
+| **Preserved typo** | `metrics._remediach_hits` | Cosmetic |
 
 ### Future Roadmap
 
 | Priority | Improvement | Effort | Impact |
 |----------|-------------|--------|--------|
 | 1 | **Add `get_service()`, `get_endpoints()`, `get_configmap()` to collector** | Small | Detects scenario 10 + enriches config/image scenarios |
-| 2 | **Retry with exponential backoff in LLM providers** | Small | Production resilience |
-| 3 | **Cost tracking per request** (token counting for OpenAI/Anthropic) | Small | Budget visibility |
-| 4 | **Confusion matrix in evaluation** | Small | Per-category precision/recall |
-| 5 | **Semantic similarity for root-cause matching** (sentence embeddings) | Medium | More accurate `root_cause_correct` metric |
-| 6 | **Statistical significance testing** (bootstrap confidence intervals) | Medium | Rigorous comparison LLM vs baselines |
-| 7 | **Multi-pod analysis** (correlate failures across pods in a Deployment) | Medium | Detects cascading failures |
-| 8 | **Streaming responses** (SSE for incremental report delivery) | Medium | UX improvement for long-running analyses |
-| 9 | **Persisted report store** (SQLite or PostgreSQL) | Medium | Production-grade persistence |
-| 10 | **Authentication** (API key or OIDC) | Small | Production security |
+| 2 | **Worker-based job execution** — BRPOP consumers on `job:queue` (contract already in place) | Medium | Horizontal pipeline scaling |
+| 3 | **Retry with exponential backoff in LLM providers** | Small | Production resilience |
+| 4 | **Authentication** (API key or OIDC) + per-tenant rate limits | Small–Medium | Production security |
+| 5 | **gRPC/proto3 + AsyncAPI/Kafka adoption** (migration plans already written in `contracts/rpc`, `contracts/events`) | Medium–Large | Triggered by throughput, streaming, or polyglot needs |
+| 6 | **PostgreSQL for reports-svc** (ownership rule confines the swap to one service) | Medium | Durability at scale |
+| 7 | **Cost tracking per request** (token counting) | Small | Budget visibility |
+| 8 | **Confusion matrix + significance testing in evaluation** | Small–Medium | Rigorous classifier comparison |
+| 9 | **Semantic similarity for root-cause matching** (sentence embeddings) | Medium | More accurate `root_cause_correct` |
+| 10 | **Multi-pod analysis** (correlate failures across a Deployment) | Medium | Cascading-failure detection |
 
 ### Research Extensions
 
@@ -1958,10 +2070,180 @@ Ruff is configured with `select = ["E", "F", "I", "N", "W"]`:
 | **Fine-tuning** | Can a fine-tuned small model (e.g. DeepSeek-coder 1.3B) match a large model (GPT-4o) on this task? |
 | **Few-shot prompting** | Does adding 2–3 worked examples to the prompt improve accuracy or confidence calibration? |
 | **Chain-of-thought** | Does asking the LLM to reason step-by-step (then produce the JSON) improve root-cause accuracy? |
-| **Cross-cluster generalisation** | Does the LLM trained on k3s evidence generalise to EKS/AKS/GKE with different log formats? |
-| **Adversarial evidence** | Can the LLM be misled by planted log lines, and does the validator catch it? |
+| **Cross-cluster generalisation** | Does evidence from k3s generalise to EKS/AKS/GKE with different log formats? |
+| **Adversarial evidence** | Can the LLM be misled by planted log lines, and does validation catch it? |
 | **Human-in-the-loop evaluation** | How does LLM accuracy compare to a junior on-call engineer with the same evidence? |
 
 ---
 
-*End of document. Generated 21 July 2026.*
+## 28. Production Deployment Architectures
+
+While the current deployment runs Docker Compose on a single EC2 instance (sufficient for dissertation-scale evaluation), the platform is designed to scale onto managed Kubernetes in production. Below are reference architectures for three deployment tiers.
+
+### Cross-Platform Component Mapping
+
+| Component | AWS EKS | Azure AKS | Custom K8s (Hetzner) |
+|-----------|---|-----------|------|
+| Kubernetes cluster | EKS (managed) | AKS (managed) | k3s / kubeadm |
+| DNS | Route53 | Azure DNS | Cloudflare (free) |
+| Load Balancer | ALB + AWS LB Controller | App Gateway v2 + AGIC | MetalLB / HAProxy |
+| TLS certificates | ACM | Key Vault | cert-manager + Let's Encrypt |
+| Auth (dashboard) | ALB + Cognito OIDC | Entra ID via OAuth2 Proxy | Dex + OAuth2 Proxy |
+| PostgreSQL | RDS (Multi-AZ) | Azure DB Flexible Server | CloudNativePG operator (3-replica in-cluster) |
+| Redis | ElastiCache | Azure Cache for Redis | Bitnami Sentinel (3-replica in-cluster) |
+| LLM API key storage | Secrets Manager + IRSA | Key Vault + CSI Driver | HashiCorp Vault or Sealed Secrets |
+| Container registry | ECR | ACR | Harbor or GHCR |
+| Metrics | CloudWatch + AMP | Managed Prometheus | kube-prometheus-stack |
+| Logs | CloudWatch Logs | Log Analytics | Loki + Promtail |
+| Traces | X-Ray (ADOT) | App Insights | Tempo + OpenTelemetry Collector |
+| Runtime security | GuardDuty | Defender for Containers | Falco |
+| Policy enforcement | OPA/Gatekeeper | Azure Policy for K8s | Kyverno |
+| Storage (PVCs) | EBS CSI | Azure Disk CSI | Longhorn (replicated) |
+| GitOps | ArgoCD / Flux | ArgoCD / Flux | ArgoCD / Flux |
+| **Approx. platform cost (excl. LLM)** | **~$580/mo** | **~$1,250/mo** | **~€55/mo** |
+
+LLM cost is platform-independent: gpt-4o-mini averages ~$0.15 per analysis. At 100 analyses/day, that adds ~$450/month across all platforms.
+
+### Network Traffic Flow (Production)
+
+```mermaid
+flowchart TB
+    subgraph EXT["External Traffic"]
+        browser["Browser"]
+        pd["PagerDuty / Alertmanager"]
+    end
+
+    subgraph LB["Ingress / Load Balancer"]
+        tls["TLS termination · OIDC auth"]
+    end
+
+    subgraph ANALYSER["analyser namespace"]
+        f["frontend :3000"]
+        gw["gateway :8000"]
+        o["orchestrator :8001"]
+        co["collector :8002"]
+        pr["processor :8003"]
+        l["llm :8004"]
+        re["reports :8005"]
+        sc["scenario :8006"]
+        r[("redis :6379")]
+    end
+
+    subgraph MANAGED["Managed Data Services"]
+        pg[("PostgreSQL")]
+    end
+
+    tls --> f
+    tls --> gw
+    f --> gw
+    gw --> o
+    gw --> re
+    gw --> sc
+    o --> co
+    o --> pr
+    o --> l
+    o --> re
+    o <--> r
+    re --> pg
+    co -->|"kubectl READ pods/logs/events"| K8S["kube-apiserver"]
+    sc -->|"kubectl PATCH demo namespace"| K8S
+    l -->|"HTTPS"| LLM_APIS["api.openai.com / api.anthropic.com"]
+
+    browser --> tls
+    pd --> tls
+```
+
+### Integration with Incident Management Stack
+
+The gateway's `POST /api/jobs` endpoint is designed as a webhook target. Existing alert sources can trigger analysis automatically:
+
+```mermaid
+flowchart LR
+    subgraph SOURCES["Alert Sources"]
+        AM["Alertmanager"]
+        PD["PagerDuty"]
+        SLACK["Slack"]
+    end
+
+    subgraph ANALYSER["K8s LLM Incident Analyser"]
+        GW["POST /api/jobs"]
+        PIPELINE["collect → process → llm → persist"]
+    end
+
+    subgraph OUTPUTS["Output Destinations"]
+        SLACK_OUT["Slack: root cause + fix"]
+        PD_OUT["PagerDuty: enriched incident"]
+        JIRA["Jira ticket (auto-created)"]
+        DASHBOARD["Dashboard: live SSE"]
+    end
+
+    AM -->|"webhook"| GW
+    PD -->|"webhook"| GW
+    GW --> PIPELINE
+    PIPELINE --> SLACK_OUT
+    PIPELINE --> PD_OUT
+    PIPELINE --> JIRA
+    PIPELINE --> DASHBOARD
+```
+
+### Operational Workflows
+
+**Alert-Triggered Analysis**: An alert from PagerDuty/Alertmanager fires a `POST /api/jobs` webhook; the pipeline runs back-to-front (collect→process→llm→persist); the resulting `IncidentReport` is pushed to Slack with the root cause, evidence, and a copy-paste kubectl command. Time from alert to fix: typically under 2 minutes.
+
+**Proactive Scanning**: A CronJob detects pods in CrashLoopBackOff/OOMKilled/ImagePullBackOff, deduplicates against recent analyses, and submits jobs for each new failure. If more than 3 failures appear in one hour, an alert fires.
+
+**Chaos Engineering**: The scenario service (`POST /api/scenarios/{id}/apply`) injects controlled faults into a test namespace. After each fault, the analyser diagnoses it, and the evaluation harness scores the result against ground truth. This double-checks both the platform and the LLM: if a fault the LLM previously detected now goes undetected, something regressed.
+
+### Production Readiness Checklist
+
+| Area | Requirement |
+|------|------------|
+| **Infrastructure** | Multi-node cluster with autoscaling; HPA on processor; PodDisruptionBudget on orchestrator + reports; PostgreSQL with automated backups + PITR; Redis with AOF persistence |
+| **Security** | OIDC/OAuth2 on dashboard; API key auth on gateway; secrets in Vault/Secrets Manager (never in env vars); NetworkPolicies (deny-all, explicit allow); non-root containers, read-only root FS, drop capabilities; PodSecurityStandards: restricted; image vulnerability scanning (Trivy/Snyk) |
+| **Observability** | Prometheus `/metrics` on all services; Grafana dashboards (pipeline latency, LLM errors, queue depth); structured JSON logs → Loki/CloudWatch/Log Analytics; distributed tracing: OpenTelemetry → Tempo/X-Ray; alerts on 5xx rate, queue depth, LLM API errors |
+| **CI/CD** | GitOps pipeline (ArgoCD/Flux); staging→production environment promotion; canary or blue-green rollouts; contracts-version drift gate |
+
+### Quick-Start by Platform
+
+```bash
+# All platforms — first steps
+git clone https://github.com/1hirak/k8s-llm-incident-analyser.git
+cd k8s-llm-incident-analyser
+cp .env.example .env
+# Edit .env: set LLM_PROVIDER and API keys
+
+# AWS EKS
+eksctl create cluster -f cluster.yaml
+kubectl create namespace analyser
+kubectl apply -k k8s/overlays/production-aws/
+
+# Azure AKS
+az aks create -g analyser-prod -n analyser --node-count 3
+az aks get-credentials -g analyser-prod -n analyser
+kubectl create namespace analyser
+kubectl apply -k k8s/overlays/production-azure/
+
+# Custom K8s (any cluster + ingress-nginx + cert-manager)
+helm install ingress-nginx ingress-nginx/ingress-nginx -n ingress-nginx --create-namespace
+helm install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --set installCRDs=true
+kubectl create namespace analyser
+kubectl apply -k k8s/overlays/production/
+```
+
+### FAQ
+
+**Does this replace Prometheus/Datadog?** No. Monitoring detects problems. This tool diagnoses root causes — it sits downstream of alerts.
+
+**Does the LLM see my secrets?** No. The processor service redacts API keys, passwords, tokens, and connection strings *before* evidence reaches the LLM provider.
+
+**Can it modify my production workloads?** No. The collector is read-only (`get/list/watch` only). The scenario service only patches a designated test namespace (default: `demo`).
+
+**What if my cluster has no outbound internet?** Only the LLM service calls external APIs. For air-gapped clusters, swap to a local LLM (Ollama/vLLM) behind the same `/analyse` endpoint.
+
+**Can I add custom failure categories?** Yes. Extend `FailureCategory` in `services/shared/src/k8s_llm_shared/enums.py`, update `contracts/` (the SSOT), and regenerate the frontend types. Changing enums bumps the contracts major version.
+
+**Which LLM provider should I use?** gpt-4o-mini (OpenAI) offers the best cost-quality ratio. Anthropic Claude 4 Haiku is a close second; DeepSeek is the most cost-effective.
+
+---
+
+*End of document. Rewritten for the v2 microservices platform, 22 July 2026.*

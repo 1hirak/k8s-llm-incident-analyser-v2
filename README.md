@@ -263,7 +263,7 @@ a real cluster.
 | [`docs/architecture.md`](docs/architecture.md) | Condensed architecture brief |
 | [`docs/README.md`](docs/README.md) | Index of all documentation |
 | [`contracts/README.md`](contracts/README.md) | The Single Source of Truth: pillars, alignment rules, review checklist |
-| [`docs/Technical-Documentation.md`](docs/Technical-Documentation.md) | v1 monolith reference (historical) |
+| [`docs/Technical-Documentation.md`](docs/Technical-Documentation.md) | Exhaustive A-to-Z reference manual — every endpoint, env var, schema, algorithm, test suite, and deployment detail |
 | [`docs/Deep-Dive-05-OOM-Walkthrough.md`](docs/Deep-Dive-05-OOM-Walkthrough.md) | Narrative trace of one OOM scenario |
 
 ## License
