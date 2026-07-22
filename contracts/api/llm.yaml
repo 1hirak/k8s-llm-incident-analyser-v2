@@ -1,0 +1,167 @@
+# ============================================================================
+# OpenAPI 3.1 Contract — llm-svc (Internal)
+# ============================================================================
+# The LLM service owns all LLM provider integrations (mock, openai,
+# anthropic, deepseek), prompt building, and structured-output validation.
+# It is the only service that holds API keys for external LLM vendors.
+#
+# This service is called by:
+#   - orchestrator-svc (POST /analyse)
+#
+# This service calls:
+#   - OpenAI API (chat.completions.parse)
+#   - Anthropic API (messages.parse)
+#   - DeepSeek API (httpx POST)
+#   - None (mock provider — heuristic classifier)
+#
+# Shared schemas (evidence_package, incident_report) are referenced from
+# orchestrator.yaml and gateway.yaml respectively.
+# ============================================================================
+
+openapi: 3.1.0
+info:
+  title: llm-svc — Internal API
+  version: 1.0.0
+  description: |
+    Internal API for the LLM analysis service.
+
+    Receives a redacted EvidencePackage, builds the system + user prompts
+    (including the IncidentReport JSON schema), calls the configured LLM
+    provider, validates the structured output against the Pydantic schema,
+    and returns an IncidentReport.
+
+    Provider selection is driven by the LLM_PROVIDER environment variable:
+      - mock:      heuristic classifier (no API call, deterministic)
+      - openai:    OpenAI chat.completions.parse() with structured outputs
+      - anthropic: Anthropic messages.parse() with Pydantic output
+      - deepseek:  DeepSeek httpx POST with json_object mode + schema in prompt
+
+    API keys are read from environment variables and never logged.
+servers:
+  - url: http://llm:8004
+    description: Docker network internal
+
+components:
+  schemas:
+    provider_info:
+      type: object
+      description: Information about a configured LLM provider.
+      required:
+        - id
+        - name
+        - model
+        - available
+      properties:
+        id:
+          type: string
+          enum: [mock, openai, anthropic, deepseek]
+        name:
+          type: string
+          example: OpenAI
+        model:
+          type: string
+          example: gpt-4o-mini
+        available:
+          type: boolean
+          description: Whether the API key is configured for this provider.
+
+tags:
+  - name: Health
+  - name: Analyse
+  - name: Providers
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: LLM service health check
+      description: |
+        Returns service health plus the currently configured provider and
+        model. The gateway's /health endpoint proxies this field.
+      operationId: getLlmHealth
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/health_response'
+              example:
+                status: ok
+                service: llm-svc
+                version: 0.1.0
+                provider: deepseek
+                model: deepseek-chat
+
+  /providers:
+    get:
+      tags: [Providers]
+      summary: List configured LLM providers
+      description: |
+        Returns all providers with their availability status (whether the
+        API key is set). Used by the frontend Settings page.
+      operationId: listProviders
+      responses:
+        '200':
+          description: Provider list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/provider_info'
+              example:
+                items:
+                  - id: mock
+                    name: Mock (heuristic)
+                    model: "(none)"
+                    available: true
+                  - id: deepseek
+                    name: DeepSeek
+                    model: deepseek-chat
+                    available: true
+                  - id: openai
+                    name: OpenAI
+                    model: gpt-4o-mini
+                    available: false
+
+  /analyse:
+    post:
+      tags: [Analyse]
+      summary: Analyse evidence and produce an incident report
+      description: |
+        Receives a redacted EvidencePackage, builds the prompt, calls the
+        configured LLM provider, and returns a validated IncidentReport.
+
+        This is the slowest stage in the pipeline (2-8 seconds for real
+        LLM providers, <50ms for mock). The orchestrator sets a 60-second
+        timeout on this call.
+      operationId: analyseEvidence
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'orchestrator.yaml#/components/schemas/evidence_package'
+      responses:
+        '200':
+          description: Analysis complete — incident report generated
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/incident_report'
+        '500':
+          description: |
+            Analysis failed. Common causes:
+            - LLM API error (401, 429, 503)
+            - Structured output validation failure
+            - Response truncated (increase LLM_MAX_TOKENS)
+            - Content filtered by safety system
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'

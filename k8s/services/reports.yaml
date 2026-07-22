@@ -1,0 +1,83 @@
+# reports-svc — SQLite persistence (single writer, PVC-backed)
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: reports-data
+  namespace: analyser
+  labels:
+    app.kubernetes.io/name: reports-svc
+    app.kubernetes.io/component: platform
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reports
+  namespace: analyser
+  labels:
+    app.kubernetes.io/name: reports-svc
+    app.kubernetes.io/component: platform
+spec:
+  replicas: 1  # single writer — never scale beyond 1 with SQLite
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: reports
+  template:
+    metadata:
+      labels:
+        app: reports
+    spec:
+      containers:
+        - name: reports
+          image: k8s-llm-reports-svc:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8005
+          env:
+            - name: DATABASE_PATH
+              value: "/data/reports.db"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8005
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8005
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              memory: 96Mi
+              cpu: 50m
+            limits:
+              memory: 256Mi
+              cpu: 200m
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: reports-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reports
+  namespace: analyser
+spec:
+  selector:
+    app: reports
+  ports:
+    - port: 8005
+      targetPort: 8005

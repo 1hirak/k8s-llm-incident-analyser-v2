@@ -1,0 +1,36 @@
+# Documentation Index
+
+Everything written about this platform, and when to read it.
+
+## Start here
+
+| Document | Read it when… |
+|----------|---------------|
+| **[`DEEP-DIVE.md`](./DEEP-DIVE.md)** | You want to understand the **whole software** — design philosophy, architecture, a hop-by-hop trace of an analysis job, every service, the frontend, evaluation, testing, deployment, and an operational playbook. This is the flagship guide. |
+| [`architecture.md`](./architecture.md) | You want the **10-minute** version: topology, responsibilities, data stores, pipeline stages. |
+| [`../contracts/README.md`](../contracts/README.md) | You are changing any API, schema, enum, or infra — the contracts are the Single Source of Truth and change **before** code. |
+
+## Reference
+
+| Document | Contents |
+|----------|----------|
+| [`../contracts/api/*.yaml`](../contracts/api/) | OpenAPI 3.1 for every service boundary (gateway public API + 6 internal APIs, incl. SSE event schemas) |
+| [`../contracts/database/schema.sql`](../contracts/database/schema.sql) | SQLite DDL — tables, CHECK constraints, indexes, triggers |
+| [`../contracts/database/redis_schema.md`](../contracts/database/redis_schema.md) | Redis key patterns, TTLs, pub/sub channels, job lifecycle |
+| [`../contracts/events/README.md`](../contracts/events/README.md) | Why AsyncAPI is deferred to v2 (+ migration plan) |
+| [`../contracts/rpc/README.md`](../contracts/rpc/README.md) | Why proto3/gRPC is deferred to v2 (+ mapping rules) |
+| [`report_schema.json`](./report_schema.json) | The `IncidentReport` JSON schema as sent to LLM providers |
+
+## Historical (v1 monolith — superseded)
+
+| Document | Note |
+|----------|------|
+| [`Technical-Documentation.md`](./Technical-Documentation.md) | Exhaustive v1 single-process reference. Pipeline *semantics* still apply; architecture does not. |
+| [`index.html`](./index.html) | Rendered version of the v1 documentation. |
+| [`Deep-Dive-05-OOM-Walkthrough.md`](./Deep-Dive-05-OOM-Walkthrough.md) | Narrative end-to-end trace of the OOM scenario (written against v1; the v2 service names differ, the pipeline stages are identical). |
+
+---
+
+**Rule of thumb**: code answers *how*, contracts answer *what*, and the
+deep dive answers *why*. When they disagree, the code is right — then fix
+the document (or the contract).

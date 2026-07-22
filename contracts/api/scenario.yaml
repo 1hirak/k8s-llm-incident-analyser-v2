@@ -1,0 +1,187 @@
+# ============================================================================
+# OpenAPI 3.1 Contract — scenario-svc (Internal)
+# ============================================================================
+# The scenario service manages fault scenarios — listing available scenarios,
+# applying faults to the cluster via kubectl patch, and resetting to the
+# healthy baseline. It is the only service that needs K8s write RBAC
+# (deployment patch permission).
+#
+# This service is called by:
+#   - gateway-svc (GET /api/scenarios, POST /api/scenarios/{id}/apply,
+#     POST /api/scenarios/reset — proxied)
+#
+# This service calls:
+#   - kubectl subprocess (patch deployment, apply/reset manifests)
+#   - filesystem (reads k8s/scenarios/*/fault.yaml for scenario metadata)
+#
+# Shared schemas (scenario_summary, scenario_apply_response) are referenced
+# from gateway.yaml.
+# ============================================================================
+
+openapi: 3.1.0
+info:
+  title: scenario-svc — Internal API
+  version: 1.0.0
+  description: |
+    Internal API for the fault scenario service.
+
+    Reads scenario metadata from the filesystem (k8s/scenarios/*/fault.yaml)
+    and applies/resets faults via kubectl subprocess calls.
+
+    Requires K8s RBAC: ServiceAccount with deployment patcher permissions
+    (deployments — get, list, patch, update).
+
+    The service tracks whether a scenario is currently applied (in-memory
+    state). Applying a scenario when one is already active returns 409 —
+    the caller must reset first.
+servers:
+  - url: http://scenario:8006
+    description: Docker network internal
+
+tags:
+  - name: Health
+  - name: Scenarios
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Scenario service health check
+      operationId: getScenarioHealth
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/health_response'
+              example:
+                status: ok
+                service: scenario-svc
+                version: 0.1.0
+
+  /scenarios:
+    get:
+      tags: [Scenarios]
+      summary: List available fault scenarios
+      description: |
+        Scans the k8s/scenarios/ directory for subdirectories containing
+        fault.yaml files. Returns a sorted list of scenario summaries.
+
+        Scenario metadata (name, category, description, severity) is
+        derived from the scenario's ground truth JSON file
+        (evaluation/ground_truth/{scenario_id}.json) if available, or
+        from the directory name and fault.yaml content as fallback.
+      operationId: listScenarios
+      responses:
+        '200':
+          description: List of scenarios
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: 'gateway.yaml#/components/schemas/scenario_summary'
+              example:
+                items:
+                  - scenario_id: 01-missing-env
+                    name: Missing Environment Variable
+                    category: config
+                    description: DATABASE_URL environment variable set to empty string
+                    severity: critical
+                  - scenario_id: 05-oom
+                    name: OOM Killed
+                    category: resource
+                    description: Memory limit reduced to 32Mi causing OOMKilled
+                    severity: high
+        '500':
+          description: Failed to read scenario directory
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'
+
+  /scenarios/{scenario_id}/apply:
+    post:
+      tags: [Scenarios]
+      summary: Apply a fault scenario to the cluster
+      description: |
+        Reads the fault.yaml strategic merge patch from
+        k8s/scenarios/{scenario_id}/fault.yaml and applies it via:
+          kubectl patch deployment demo-app -n demo --type strategic -p "{fault.yaml}"
+
+        Sets in-memory state to track that a scenario is active.
+        Returns 409 if a scenario is already applied — caller must POST
+        /scenarios/reset first.
+      operationId: applyScenario
+      parameters:
+        - name: scenario_id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: 05-oom
+      responses:
+        '200':
+          description: Scenario applied
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/scenario_apply_response'
+              example:
+                applied: true
+                scenario_id: 05-oom
+                fault_description: Memory limit reduced to 32Mi
+        '404':
+          description: Scenario not found (no fault.yaml at expected path)
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'
+        '409':
+          description: A scenario is already applied — reset first
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'
+        '500':
+          description: kubectl patch failed
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'
+
+  /scenarios/reset:
+    post:
+      tags: [Scenarios]
+      summary: Reset cluster to healthy baseline
+      description: |
+        Removes any applied fault and re-applies the base manifests:
+        1. kubectl delete deployment demo-app -n demo
+        2. kubectl apply -f k8s/base/
+        3. kubectl rollout status deployment/demo-app -n demo
+
+        Clears the in-memory scenario-applied state.
+      operationId: resetScenarios
+      responses:
+        '200':
+          description: Cluster reset
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reset]
+                properties:
+                  reset:
+                    type: boolean
+                    example: true
+        '500':
+          description: kubectl reset failed
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'

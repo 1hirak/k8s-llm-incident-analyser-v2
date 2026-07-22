@@ -1,0 +1,96 @@
+# llm-svc — LLM providers (API keys via llm-secrets Secret)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-config
+  namespace: analyser
+  labels:
+    app.kubernetes.io/name: llm-svc
+    app.kubernetes.io/component: platform
+data:
+  LLM_PROVIDER: "mock"
+  LLM_MAX_TOKENS: "2000"
+# Create the secret with real keys before switching providers:
+#   kubectl create secret generic llm-secrets -n analyser \
+#     --from-literal=OPENAI_API_KEY=sk-... \
+#     --from-literal=ANTHROPIC_API_KEY=sk-ant-... \
+#     --from-literal=DEEPSEEK_API_KEY=sk-...
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm
+  namespace: analyser
+  labels:
+    app.kubernetes.io/name: llm-svc
+    app.kubernetes.io/component: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llm
+  template:
+    metadata:
+      labels:
+        app: llm
+    spec:
+      containers:
+        - name: llm
+          image: k8s-llm-llm-svc:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8004
+          envFrom:
+            - configMapRef:
+                name: llm-config
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: llm-secrets
+                  key: OPENAI_API_KEY
+                  optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: llm-secrets
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+            - name: DEEPSEEK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: llm-secrets
+                  key: DEEPSEEK_API_KEY
+                  optional: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8004
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8004
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 100m
+            limits:
+              memory: 384Mi
+              cpu: 300m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm
+  namespace: analyser
+spec:
+  selector:
+    app: llm
+  ports:
+    - port: 8004
+      targetPort: 8004

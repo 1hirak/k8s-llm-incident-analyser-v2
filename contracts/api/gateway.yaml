@@ -1,0 +1,1073 @@
+# ============================================================================
+# OpenAPI 3.1 Contract — gateway-svc (Public API)
+# ============================================================================
+# This is the public-facing API consumed by the Next.js frontend. The gateway
+# proxies requests to the appropriate internal service (orchestrator,
+# reports-svc, scenario-svc).
+#
+# This file also defines ALL shared component schemas ($defs) that are
+# referenced by the other 6 internal OpenAPI files via relative $ref paths.
+# This avoids schema duplication and ensures a single definition point for
+# IncidentReport, EvidenceItem, JobStatus, etc.
+#
+# Naming: snake_case everywhere (per contracts/README.md §4.1)
+# IDs: UUIDv7 (format: uuid)
+# Errors: RFC 7807 Problem Details
+# ============================================================================
+
+openapi: 3.1.0
+info:
+  title: K8s LLM Incident Analyser — Public API
+  version: 1.0.0
+  description: |
+    Public API for the K8s LLM Incident Analyser platform.
+    Consumed by the Next.js frontend.
+
+    All field names are snake_case. All IDs are UUIDv7 strings.
+    All errors use RFC 7807 Problem Details.
+  contact:
+    name: Hirak Das
+    url: https://github.com/1hirak/k8s-llm-incident-analyser
+
+servers:
+  - url: http://localhost:8000
+    description: Local development
+  - url: http://18.133.255.70:8000
+    description: AWS EC2 deployment
+
+# ============================================================================
+# Shared Component Schemas
+# ============================================================================
+# These schemas are the single definition point for all data shapes.
+# Internal service OpenAPI files reference them via:
+#   $ref: 'gateway.yaml#/components/schemas/IncidentReport'
+# ============================================================================
+components:
+  schemas:
+
+    # --------------------------------------------------------------------------
+    # Enums (parity with SQLite CHECK constraints)
+    # --------------------------------------------------------------------------
+
+    failure_category:
+      type: string
+      enum:
+        - crash
+        - config
+        - dependency
+        - network
+        - image
+        - resource
+        - probe
+        - unknown
+      description: |
+        Classification of the failure type. Exactly 8 values.
+        Parity: SQLite CHECK, Pydantic Literal, TypeScript union.
+
+    severity:
+      type: string
+      enum:
+        - low
+        - medium
+        - high
+        - critical
+      description: |
+        Incident severity level. Exactly 4 values.
+        Parity: SQLite CHECK, Pydantic Literal, TypeScript union.
+
+    job_status_enum:
+      type: string
+      enum:
+        - queued
+        - collecting
+        - processing
+        - llm_call
+        - persisting
+        - done
+        - failed
+      description: |
+        Pipeline stage of an analysis job. Exactly 7 values.
+        Parity: SQLite CHECK, Redis hash field, SSE event payload.
+
+    evidence_source:
+      type: string
+      enum:
+        - pod_log
+        - previous_pod_log
+        - kubernetes_event
+        - pod_status
+      description: |
+        Source of an evidence item. Exactly 4 values.
+
+    # --------------------------------------------------------------------------
+    # Core Domain Models
+    # --------------------------------------------------------------------------
+
+    evidence_item:
+      type: object
+      description: |
+        A single piece of evidence extracted from Kubernetes diagnostics.
+        Parity: SQLite (stored inside report_json), Pydantic EvidenceItem.
+      required:
+        - source
+        - pod
+        - evidence
+      properties:
+        source:
+          $ref: '#/components/schemas/evidence_source'
+        pod:
+          type: string
+          description: Pod name the evidence was collected from.
+          example: demo-app-abc123
+        timestamp:
+          type: string
+          format: date-time
+          nullable: true
+          description: ISO 8601 timestamp of the evidence, if available.
+        evidence:
+          type: string
+          description: The evidence text (log line, event message, status excerpt).
+          example: "Last State: Terminated, Reason: OOMKilled, Exit Code: 137"
+
+    incident_report:
+      type: object
+      description: |
+        The canonical incident report produced by the LLM analysis pipeline.
+        This is the contract between every LLM provider and the rest of the
+        system. Parity: SQLite incidents table (denormalised fields +
+        report_json for nested fields), Pydantic IncidentReport.
+      required:
+        - incident_id
+        - incident_summary
+        - likely_root_cause
+        - affected_component
+        - failure_category
+        - severity
+        - confidence
+        - supporting_evidence
+        - suggested_fix
+        - recommended_commands
+        - human_verification_steps
+        - created_at
+      properties:
+        incident_id:
+          type: string
+          format: uuid
+          description: UUIDv7 identifier for this incident report.
+          example: 01938a7c-1234-5678-9abc-def012345678
+        incident_summary:
+          type: string
+          minLength: 10
+          description: Human-readable summary of the incident.
+        likely_root_cause:
+          type: string
+          minLength: 10
+          description: The most probable root cause, based on evidence.
+        affected_component:
+          type: string
+          description: The component most likely affected (pod, deployment, config).
+        failure_category:
+          $ref: '#/components/schemas/failure_category'
+        severity:
+          $ref: '#/components/schemas/severity'
+        confidence:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: LLM confidence score, bounded [0.0, 1.0].
+          example: 0.85
+        supporting_evidence:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/evidence_item'
+          description: At least one evidence item must be cited.
+        suggested_fix:
+          type: string
+          description: Recommended remediation action.
+        recommended_commands:
+          type: array
+          items:
+            type: string
+          description: kubectl commands to execute for remediation.
+          example:
+            - "kubectl patch deployment demo-app -n demo --type strategic -p '{...}'"
+            - "kubectl rollout status deployment/demo-app -n demo"
+        human_verification_steps:
+          type: array
+          items:
+            type: string
+          description: Steps a human should take to verify the fix.
+        created_at:
+          type: string
+          format: date-time
+          description: When the report was persisted (ISO 8601).
+
+    report_summary:
+      type: object
+      description: |
+        Summary of an incident report for list views. Excludes nested
+        arrays (supporting_evidence, recommended_commands,
+        human_verification_steps) to keep list payloads small.
+      required:
+        - incident_id
+        - namespace
+        - pod_name
+        - failure_category
+        - severity
+        - confidence
+        - incident_summary
+        - created_at
+      properties:
+        incident_id:
+          type: string
+          format: uuid
+        namespace:
+          type: string
+        pod_name:
+          type: string
+        failure_category:
+          $ref: '#/components/schemas/failure_category'
+        severity:
+          $ref: '#/components/schemas/severity'
+        confidence:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+        incident_summary:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    # --------------------------------------------------------------------------
+    # Job Models
+    # --------------------------------------------------------------------------
+
+    analysis_request:
+      type: object
+      description: |
+        Request to start a new analysis job. Submitted by the frontend
+        when the user clicks "Analyse".
+      required:
+        - namespace
+        - pod_name
+      properties:
+        namespace:
+          type: string
+          description: Kubernetes namespace of the target pod.
+          example: demo
+          default: demo
+        pod_name:
+          type: string
+          description: |
+            Pod name or deployment name. If the exact pod name is not found,
+            the collector resolves it by label selector (app={pod_name}).
+          example: demo-app
+
+    job_created:
+      type: object
+      description: Response when a new analysis job is created.
+      required:
+        - job_id
+        - status
+      properties:
+        job_id:
+          type: string
+          format: uuid
+          description: UUIDv7 identifier for the job.
+        status:
+          $ref: '#/components/schemas/job_status_enum'
+
+    job_state:
+      type: object
+      description: |
+        Full job state. Parity: Redis hash (job:{job_id}), SQLite
+        analysis_jobs table.
+      required:
+        - job_id
+        - namespace
+        - pod_name
+        - status
+        - created_at
+        - updated_at
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        namespace:
+          type: string
+        pod_name:
+          type: string
+        status:
+          $ref: '#/components/schemas/job_status_enum'
+        stage:
+          type: string
+          nullable: true
+          description: Human-readable stage detail (e.g. "Calling DeepSeek deepseek-chat").
+        incident_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Populated when status = done; absent otherwise.
+        latency_ms:
+          type: integer
+          format: int32
+          nullable: true
+          description: Total pipeline wall time in milliseconds.
+        error:
+          type: string
+          nullable: true
+          description: Error message when status = failed.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    # --------------------------------------------------------------------------
+    # SSE Event Payloads
+    # --------------------------------------------------------------------------
+
+    sse_stage_event:
+      type: object
+      description: SSE event payload for a stage transition.
+      required:
+        - event
+        - job_id
+        - status
+        - updated_at
+      properties:
+        event:
+          type: string
+          enum: [stage]
+        job_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/job_status_enum'
+        stage:
+          type: string
+          description: Human-readable stage detail.
+        updated_at:
+          type: string
+          format: date-time
+
+    sse_done_event:
+      type: object
+      description: SSE event payload for job completion.
+      required:
+        - event
+        - job_id
+        - status
+        - incident_id
+      properties:
+        event:
+          type: string
+          enum: [done]
+        job_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [done]
+        incident_id:
+          type: string
+          format: uuid
+        failure_category:
+          $ref: '#/components/schemas/failure_category'
+        severity:
+          $ref: '#/components/schemas/severity'
+        latency_ms:
+          type: integer
+          format: int32
+
+    sse_failed_event:
+      type: object
+      description: SSE event payload for job failure.
+      required:
+        - event
+        - job_id
+        - status
+        - error
+      properties:
+        event:
+          type: string
+          enum: [failed]
+        job_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [failed]
+        error:
+          type: string
+        latency_ms:
+          type: integer
+          format: int32
+
+    # --------------------------------------------------------------------------
+    # Scenario Models
+    # --------------------------------------------------------------------------
+
+    scenario_summary:
+      type: object
+      description: Summary of a fault scenario.
+      required:
+        - scenario_id
+        - name
+        - category
+        - description
+      properties:
+        scenario_id:
+          type: string
+          description: Directory name under k8s/scenarios/.
+          example: 05-oom
+        name:
+          type: string
+          description: Human-readable scenario name.
+          example: OOM Killed
+        category:
+          $ref: '#/components/schemas/failure_category'
+        description:
+          type: string
+          description: What the fault does.
+          example: Memory limit reduced to 32Mi causing OOMKilled.
+        severity:
+          $ref: '#/components/schemas/severity'
+
+    scenario_apply_response:
+      type: object
+      required:
+        - applied
+        - scenario_id
+      properties:
+        applied:
+          type: boolean
+        scenario_id:
+          type: string
+        fault_description:
+          type: string
+          description: Human-readable description of the applied fault.
+
+    # --------------------------------------------------------------------------
+    # Stats Models
+    # --------------------------------------------------------------------------
+
+    stats_response:
+      type: object
+      description: Dashboard statistics aggregate.
+      required:
+        - total_reports
+        - reports_24h
+        - mean_latency_ms
+        - mean_confidence
+        - category_counts
+      properties:
+        total_reports:
+          type: integer
+          format: int32
+        reports_24h:
+          type: integer
+          format: int32
+        mean_latency_ms:
+          type: number
+          format: float
+        mean_confidence:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+        category_counts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Map of failure_category → count.
+          example:
+            crash: 3
+            config: 5
+            resource: 2
+        latency_series:
+          type: array
+          items:
+            type: object
+            properties:
+              timestamp:
+                type: string
+                format: date-time
+              latency_ms:
+                type: integer
+                format: int32
+
+    # --------------------------------------------------------------------------
+    # Health
+    # --------------------------------------------------------------------------
+
+    health_response:
+      type: object
+      required:
+        - status
+        - service
+        - version
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        service:
+          type: string
+          example: gateway-svc
+        version:
+          type: string
+          example: 0.1.0
+        provider:
+          type: string
+          nullable: true
+          description: LLM provider name (only present on llm-svc and gateway).
+        cluster:
+          type: string
+          nullable: true
+          description: K8s cluster connectivity status (connected | unreachable).
+
+    # --------------------------------------------------------------------------
+    # Pagination Envelope
+    # --------------------------------------------------------------------------
+
+    pagination_meta:
+      type: object
+      required:
+        - count
+        - limit
+        - offset
+      properties:
+        count:
+          type: integer
+          format: int32
+          description: Total number of items matching the query (before pagination).
+        limit:
+          type: integer
+          format: int32
+          description: Maximum items returned in this response.
+        offset:
+          type: integer
+          format: int32
+          description: Number of items skipped from the start.
+
+    # --------------------------------------------------------------------------
+    # Error (RFC 7807 Problem Details)
+    # --------------------------------------------------------------------------
+
+    error:
+      type: object
+      description: RFC 7807 Problem Details JSON.
+      required:
+        - type
+        - title
+        - status
+        - detail
+      properties:
+        type:
+          type: string
+          description: URI identifying the error type.
+          example: https://errors.k8s-llm.io/job-not-found
+        title:
+          type: string
+          description: Short human-readable summary of the error.
+          example: Job not found
+        status:
+          type: integer
+          description: HTTP status code.
+          example: 404
+        detail:
+          type: string
+          description: Human-readable explanation specific to this occurrence.
+          example: No job exists with job_id 'abc123'
+        instance:
+          type: string
+          description: URI identifying the specific occurrence of the problem.
+          example: /api/jobs/abc123
+
+  # ----------------------------------------------------------------------------
+  # Reusable Responses
+  # ----------------------------------------------------------------------------
+
+  responses:
+    internal_error:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/error'
+          example:
+            type: https://errors.k8s-llm.io/internal
+            title: Internal server error
+            status: 500
+            detail: An unexpected error occurred
+
+# ============================================================================
+# Security
+# ============================================================================
+# v1: No authentication. The gateway allows all origins (CORS *) for
+# development. v2 will add API key or OIDC authentication.
+# ============================================================================
+security: []
+
+# ============================================================================
+# Tags
+# ============================================================================
+tags:
+  - name: Health
+    description: Service health and liveness checks
+  - name: Jobs
+    description: Analysis job lifecycle (create, monitor, stream)
+  - name: Reports
+    description: Incident report persistence and retrieval
+  - name: Scenarios
+    description: Fault scenario management
+  - name: Stats
+    description: Dashboard statistics and aggregates
+
+# ============================================================================
+# Paths
+# ============================================================================
+
+paths:
+
+  # --------------------------------------------------------------------------
+  # Health
+  # --------------------------------------------------------------------------
+  /health:
+    get:
+      tags: [Health]
+      summary: Gateway health check
+      description: Returns the gateway service status and configured LLM provider.
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/health_response'
+              example:
+                status: ok
+                service: gateway-svc
+                version: 0.1.0
+                provider: deepseek
+
+  # --------------------------------------------------------------------------
+  # Jobs (delegated to orchestrator-svc)
+  # --------------------------------------------------------------------------
+  /api/jobs:
+    post:
+      tags: [Jobs]
+      summary: Create a new analysis job
+      description: |
+        Starts an asynchronous analysis pipeline for the specified pod.
+        Returns immediately with a job_id. The frontend subscribes to
+        the SSE stream to receive live stage updates.
+      operationId: createJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/analysis_request'
+            example:
+              namespace: demo
+              pod_name: demo-app
+      responses:
+        '202':
+          description: Job created and queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/job_created'
+              example:
+                job_id: 01938a7b-1234-5678-9abc-def012345678
+                status: queued
+        '400':
+          description: Invalid request (missing required fields)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+    get:
+      tags: [Jobs]
+      summary: List analysis jobs
+      description: Returns a paginated list of jobs, optionally filtered by status.
+      operationId: listJobs
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/job_status_enum'
+          description: Filter by job status.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Paginated list of jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, count, limit, offset]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/job_state'
+                  count:
+                    type: integer
+                    format: int32
+                  limit:
+                    type: integer
+                    format: int32
+                  offset:
+                    type: integer
+                    format: int32
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+  /api/jobs/{job_id}:
+    get:
+      tags: [Jobs]
+      summary: Get job state
+      description: Returns the current state of a specific job.
+      operationId: getJob
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current job state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/job_state'
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+  /api/jobs/{job_id}/stream:
+    get:
+      tags: [Jobs]
+      summary: Stream job events via SSE
+      description: |
+        Opens a Server-Sent Events (SSE) connection that receives live
+        job stage transitions. The frontend's EventSource API connects
+        to this endpoint and renders a pipeline timeline.
+
+        The connection stays open until the job reaches `done` or
+        `failed`, at which point a final event is sent and the stream
+        closes.
+
+        Event types:
+          - `stage`: A stage transition (collecting, processing, llm_call, persisting)
+          - `done`: Job completed successfully (includes incident_id)
+          - `failed`: Job failed (includes error message)
+
+        All event payloads are JSON with snake_case field names.
+
+        Required headers for proxies:
+          X-Accel-Buffering: no
+          Cache-Control: no-cache
+      operationId: streamJobEvents
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: SSE stream of job events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  SSE stream. Each event has an `event:` line specifying the
+                  event type and a `data:` line with a JSON payload.
+
+                  Example stream:
+
+                  event: stage
+                  data: {"event":"stage","job_id":"01938a7b-...","status":"collecting","stage":"Collecting evidence for demo/demo-app","updated_at":"2026-07-21T10:05:34Z"}
+
+                  event: stage
+                  data: {"event":"stage","job_id":"01938a7b-...","status":"processing","stage":"Filtering logs and redacting secrets","updated_at":"2026-07-21T10:05:35Z"}
+
+                  event: stage
+                  data: {"event":"stage","job_id":"01938a7b-...","status":"llm_call","stage":"Calling DeepSeek deepseek-chat","updated_at":"2026-07-21T10:05:36Z"}
+
+                  event: stage
+                  data: {"event":"stage","job_id":"01938a7b-...","status":"persisting","stage":"Saving report","updated_at":"2026-07-21T10:05:42Z"}
+
+                  event: done
+                  data: {"event":"done","job_id":"01938a7b-...","status":"done","incident_id":"01938a7c-...","failure_category":"resource","severity":"high","latency_ms":6800}
+
+                  -- or on failure --
+
+                  event: failed
+                  data: {"event":"failed","job_id":"01938a7b-...","status":"failed","error":"kubectl timeout","latency_ms":1200}
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+
+  # --------------------------------------------------------------------------
+  # Reports (delegated to reports-svc)
+  # --------------------------------------------------------------------------
+  /api/reports:
+    get:
+      tags: [Reports]
+      summary: List incident reports
+      description: Returns a paginated list of report summaries.
+      operationId: listReports
+      parameters:
+        - name: namespace
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: pod_name
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: category
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/failure_category'
+        - name: severity
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/severity'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Paginated list of report summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, count, limit, offset]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/report_summary'
+                  count:
+                    type: integer
+                    format: int32
+                  limit:
+                    type: integer
+                    format: int32
+                  offset:
+                    type: integer
+                    format: int32
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+  /api/reports/{incident_id}:
+    get:
+      tags: [Reports]
+      summary: Get a single incident report
+      description: Returns the full incident report including all nested evidence.
+      operationId: getReport
+      parameters:
+        - name: incident_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Full incident report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/incident_report'
+        '404':
+          description: Report not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+  # --------------------------------------------------------------------------
+  # Scenarios (delegated to scenario-svc)
+  # --------------------------------------------------------------------------
+  /api/scenarios:
+    get:
+      tags: [Scenarios]
+      summary: List available fault scenarios
+      description: Returns all fault scenarios from k8s/scenarios/.
+      operationId: listScenarios
+      responses:
+        '200':
+          description: List of scenarios
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/scenario_summary'
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+  /api/scenarios/{scenario_id}/apply:
+    post:
+      tags: [Scenarios]
+      summary: Apply a fault scenario to the cluster
+      description: |
+        Applies the fault YAML to the demo deployment via kubectl patch.
+        This modifies the cluster state — the pod will start failing.
+      operationId: applyScenario
+      parameters:
+        - name: scenario_id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: 05-oom
+      responses:
+        '200':
+          description: Scenario applied successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/scenario_apply_response'
+              example:
+                applied: true
+                scenario_id: 05-oom
+                fault_description: Memory limit reduced to 32Mi
+        '404':
+          description: Scenario not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+        '409':
+          description: A scenario is already applied. Reset first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+  /api/scenarios/reset:
+    post:
+      tags: [Scenarios]
+      summary: Reset cluster to healthy baseline
+      description: Removes any applied fault and re-applies the base manifests.
+      operationId: resetScenarios
+      responses:
+        '200':
+          description: Cluster reset successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reset]
+                properties:
+                  reset:
+                    type: boolean
+                    example: true
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+  # --------------------------------------------------------------------------
+  # Stats (delegated to reports-svc)
+  # --------------------------------------------------------------------------
+  /api/stats:
+    get:
+      tags: [Stats]
+      summary: Get dashboard statistics
+      description: Returns aggregate metrics for the dashboard.
+      operationId: getStats
+      parameters:
+        - name: range
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [24h, 7d, 30d]
+            default: 7d
+          description: Time range for statistics.
+      responses:
+        '200':
+          description: Dashboard statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/stats_response'
+        '500':
+          $ref: '#/components/responses/internal_error'

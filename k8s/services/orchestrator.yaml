@@ -1,0 +1,70 @@
+# orchestrator-svc — pipeline coordination, job state (Redis), SSE
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator
+  namespace: analyser
+  labels:
+    app.kubernetes.io/name: orchestrator-svc
+    app.kubernetes.io/component: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orchestrator
+  template:
+    metadata:
+      labels:
+        app: orchestrator
+    spec:
+      containers:
+        - name: orchestrator
+          image: k8s-llm-orchestrator-svc:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8001
+          env:
+            - name: REDIS_URL
+              value: "redis://redis:6379/0"
+            - name: COLLECTOR_URL
+              value: "http://collector:8002"
+            - name: PROCESSOR_URL
+              value: "http://processor:8003"
+            - name: LLM_URL
+              value: "http://llm:8004"
+            - name: REPORTS_URL
+              value: "http://reports:8005"
+            - name: PIPELINE_TIMEOUT
+              value: "120"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 100m
+            limits:
+              memory: 384Mi
+              cpu: 300m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator
+  namespace: analyser
+spec:
+  selector:
+    app: orchestrator
+  ports:
+    - port: 8001
+      targetPort: 8001

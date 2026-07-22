@@ -1,0 +1,111 @@
+# ============================================================================
+# OpenAPI 3.1 Contract — collector-svc (Internal)
+# ============================================================================
+# The collector wraps kubectl subprocess calls to retrieve diagnostic
+# evidence from the Kubernetes cluster. It is the only service that needs
+# read-only K8s RBAC (ServiceAccount + pod-reader ClusterRole).
+#
+# This service is called by:
+#   - orchestrator-svc (POST /collect)
+#
+# This service calls:
+#   - kubectl subprocess (logs, describe, get events, get pod jsonpath)
+#
+# Shared schemas (raw_evidence) are referenced from orchestrator.yaml.
+# ============================================================================
+
+openapi: 3.1.0
+info:
+  title: collector-svc — Internal API
+  version: 1.0.0
+  description: |
+    Internal API for the Kubernetes evidence collector.
+    Wraps kubectl subprocess calls. Stateless — no database, no Redis.
+
+    Requires K8s RBAC: ServiceAccount with pod-reader ClusterRole
+    (pods, pods/log, events, namespaces — get/list/watch).
+servers:
+  - url: http://collector:8002
+    description: Docker network internal
+
+tags:
+  - name: Health
+  - name: Collect
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Collector health check
+      description: |
+        Returns service health. Does NOT verify kubectl connectivity —
+        that is checked on each /collect call.
+      operationId: getCollectorHealth
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/health_response'
+              example:
+                status: ok
+                service: collector-svc
+                version: 0.1.0
+
+  /collect:
+    post:
+      tags: [Collect]
+      summary: Collect diagnostic evidence from a pod
+      description: |
+        Runs kubectl subprocess calls to gather:
+        - Current and previous pod logs (--tail=500 --timestamps=true)
+        - Pod description (kubectl describe pod)
+        - Namespace events (kubectl get events --sort-by=.metadata.creationTimestamp)
+        - Restart count (jsonpath query)
+        - Container states (jsonpath query)
+
+        If the exact pod_name is not found, resolves by label selector
+        app={pod_name} before collecting.
+
+        All kubectl calls have a 30-second timeout. Failed calls return
+        empty strings (not errors) — the pipeline handles missing evidence
+        gracefully.
+      operationId: collectEvidence
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'gateway.yaml#/components/schemas/analysis_request'
+            example:
+              namespace: demo
+              pod_name: demo-app
+      responses:
+        '200':
+          description: Evidence collected successfully
+          content:
+            application/json:
+              schema:
+                $ref: 'orchestrator.yaml#/components/schemas/raw_evidence'
+              example:
+                namespace: demo
+                pod_name: demo-app-abc123
+                current_logs: ""
+                previous_logs: "2026-07-21T10:01:00Z WARNING Memory allocation stress test starting..."
+                pod_status: "Name: demo-app-abc123\n...\n    Last State: Terminated\n      Reason: OOMKilled\n      Exit Code: 137\n    Restart Count: 3"
+                k8s_events: "Warning Killing ... OOMKilled\nWarning BackOff ... restarting"
+                restart_count: 3
+                container_states:
+                  - name: demo-app
+                    restartCount: 3
+                    lastState:
+                      terminated:
+                        reason: OOMKilled
+                        exitCode: 137
+        '500':
+          description: Collection failed (kubectl not found, cluster unreachable)
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'

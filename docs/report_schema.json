@@ -1,0 +1,131 @@
+{
+  "$defs": {
+    "EvidenceItem": {
+      "properties": {
+        "source": {
+          "enum": [
+            "pod_log",
+            "previous_pod_log",
+            "kubernetes_event",
+            "pod_status"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "pod": {
+          "title": "Pod",
+          "type": "string"
+        },
+        "timestamp": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp"
+        },
+        "evidence": {
+          "title": "Evidence",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "pod",
+        "evidence"
+      ],
+      "title": "EvidenceItem",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "incident_summary": {
+      "minLength": 10,
+      "title": "Incident Summary",
+      "type": "string"
+    },
+    "likely_root_cause": {
+      "minLength": 10,
+      "title": "Likely Root Cause",
+      "type": "string"
+    },
+    "affected_component": {
+      "title": "Affected Component",
+      "type": "string"
+    },
+    "failure_category": {
+      "enum": [
+        "crash",
+        "config",
+        "dependency",
+        "network",
+        "image",
+        "resource",
+        "probe",
+        "unknown"
+      ],
+      "title": "Failure Category",
+      "type": "string"
+    },
+    "severity": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Confidence",
+      "type": "number"
+    },
+    "supporting_evidence": {
+      "items": {
+        "$ref": "#/$defs/EvidenceItem"
+      },
+      "minItems": 1,
+      "title": "Supporting Evidence",
+      "type": "array"
+    },
+    "suggested_fix": {
+      "title": "Suggested Fix",
+      "type": "string"
+    },
+    "recommended_commands": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Recommended Commands",
+      "type": "array"
+    },
+    "human_verification_steps": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Human Verification Steps",
+      "type": "array"
+    }
+  },
+  "required": [
+    "incident_summary",
+    "likely_root_cause",
+    "affected_component",
+    "failure_category",
+    "severity",
+    "confidence",
+    "supporting_evidence",
+    "suggested_fix",
+    "recommended_commands",
+    "human_verification_steps"
+  ],
+  "title": "IncidentReport",
+  "type": "object"
+}

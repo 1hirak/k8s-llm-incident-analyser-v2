@@ -1,0 +1,290 @@
+# ============================================================================
+# OpenAPI 3.1 Contract — orchestrator-svc (Internal)
+# ============================================================================
+# The orchestrator owns the analysis pipeline lifecycle. It creates jobs,
+# coordinates calls to collector → processor → llm → reports, publishes
+# SSE events via Redis pub/sub, and maintains job state in Redis.
+#
+# This service is called by:
+#   - gateway-svc (proxies frontend requests here)
+#
+# This service calls:
+#   - collector-svc (POST /collect)
+#   - processor-svc (POST /process)
+#   - llm-svc (POST /analyse)
+#   - reports-svc (POST /reports, POST /jobs, GET /stats)
+#
+# Shared schemas are referenced from gateway.yaml to avoid duplication.
+# ============================================================================
+
+openapi: 3.1.0
+info:
+  title: orchestrator-svc — Internal API
+  version: 1.0.0
+  description: |
+    Internal API for the orchestrator service. Not exposed directly to
+    the frontend — the gateway proxies all public requests here.
+
+    The orchestrator manages:
+    - Job creation and state tracking (Redis)
+    - Pipeline coordination (sequential calls to collector, processor, llm, reports)
+    - SSE event publishing (Redis pub/sub)
+    - Job archival to SQLite (via reports-svc)
+servers:
+  - url: http://orchestrator:8001
+    description: Docker network internal
+
+components:
+  schemas:
+    # Internal-only: RawEvidence is defined here because it is the collector's
+    # output and the processor's input — it never appears in the public API.
+    raw_evidence:
+      type: object
+      description: |
+        Raw evidence collected by the collector-svc from kubectl.
+        This is the internal data shape passed between collector and processor.
+        Not exposed in the public API (gateway.yaml).
+      required:
+        - namespace
+        - pod_name
+      properties:
+        namespace:
+          type: string
+          example: demo
+        pod_name:
+          type: string
+          example: demo-app-abc123
+        current_logs:
+          type: string
+          description: kubectl logs output (current container, --tail=500 --timestamps=true).
+        previous_logs:
+          type: string
+          description: kubectl logs --previous output.
+        pod_status:
+          type: string
+          description: kubectl describe pod output.
+        k8s_events:
+          type: string
+          description: kubectl get events output.
+        restart_count:
+          type: integer
+          format: int32
+          description: Container restart count from JSONPath query.
+        container_states:
+          type: array
+          description: |
+            Parsed containerStatuses JSON from kubectl. kubectl's jsonpath
+            query {.status.containerStatuses} returns a JSON array — one
+            entry per container.
+          items:
+            type: object
+            additionalProperties: true
+
+    evidence_package:
+      type: object
+      description: |
+        Preprocessed and redacted evidence package. This is the internal
+        data shape passed between processor and llm-svc. It is also the
+        input to the LLM prompt builder.
+      required:
+        - namespace
+        - pod_name
+        - current_logs
+        - previous_logs
+        - pod_status_summary
+        - k8s_events_filtered
+        - restart_count
+      properties:
+        namespace:
+          type: string
+        pod_name:
+          type: string
+        current_logs:
+          type: string
+          description: Filtered current logs (noise removed, signal + context window).
+        previous_logs:
+          type: string
+          description: Filtered previous logs.
+        pod_status_summary:
+          type: string
+          description: Truncated pod status (max 2000 chars).
+        k8s_events_filtered:
+          type: string
+          description: Extracted Warning + signal events only.
+        restart_count:
+          type: integer
+          format: int32
+
+  responses:
+    internal_error:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: 'gateway.yaml#/components/schemas/error'
+
+tags:
+  - name: Health
+  - name: Jobs
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Orchestrator health check
+      operationId: getOrchestratorHealth
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/health_response'
+              example:
+                status: ok
+                service: orchestrator-svc
+                version: 0.1.0
+
+  /jobs:
+    post:
+      tags: [Jobs]
+      summary: Create a new analysis job
+      description: |
+        Creates a job in Redis with status=queued, pushes to the job queue,
+        and begins processing inline (v1). Returns 202 with the job_id
+        immediately — the pipeline runs as a background asyncio task.
+      operationId: createJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'gateway.yaml#/components/schemas/analysis_request'
+      responses:
+        '202':
+          description: Job created
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/job_created'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+    get:
+      tags: [Jobs]
+      summary: List jobs (paginated)
+      operationId: listJobs
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: 'gateway.yaml#/components/schemas/job_status_enum'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Paginated job list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, count, limit, offset]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: 'gateway.yaml#/components/schemas/job_state'
+                  count:
+                    type: integer
+                    format: int32
+                  limit:
+                    type: integer
+                    format: int32
+                  offset:
+                    type: integer
+                    format: int32
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+  /jobs/{job_id}:
+    get:
+      tags: [Jobs]
+      summary: Get job state from Redis
+      operationId: getJob
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Job state
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/job_state'
+        '404':
+          description: Job not found in Redis
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+  /jobs/{job_id}/stream:
+    get:
+      tags: [Jobs]
+      summary: SSE stream of job events
+      description: |
+        Subscribes to the Redis pub/sub channel job:{job_id}:events and
+        forwards each message as an SSE event. The stream closes after
+        sending a `done` or `failed` event.
+      operationId: streamJobEvents
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  SSE event stream. See gateway.yaml GET /api/jobs/{job_id}/stream
+                  for the full event format specification.
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'

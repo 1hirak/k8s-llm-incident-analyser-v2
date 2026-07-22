@@ -1,0 +1,54 @@
+# frontend — Next.js dashboard (NodePort for browser access)
+#
+# NOTE: NEXT_PUBLIC_API_URL is inlined at image build time. Build the
+# frontend image with the browser-reachable gateway URL:
+#   docker build -t k8s-llm-frontend:latest \
+#     --build-arg NEXT_PUBLIC_API_URL=http://$(minikube ip):30080 ./frontend
+# For local port-forwarding (kubectl port-forward svc/gateway 8000:8000),
+# the default http://localhost:8000 works as-is.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: analyser
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/component: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: k8s-llm-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 50m
+            limits:
+              memory: 512Mi
+              cpu: 300m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: analyser
+spec:
+  type: NodePort
+  selector:
+    app: frontend
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30030

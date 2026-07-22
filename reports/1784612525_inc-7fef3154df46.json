@@ -1,0 +1,25 @@
+{
+  "incident_id": "inc-7fef3154df46",
+  "incident_summary": "[MOCK] Failure detected in demo-app-abc",
+  "likely_root_cause": "Unable to determine root cause from evidence",
+  "affected_component": "demo-app-abc",
+  "failure_category": "unknown",
+  "severity": "medium",
+  "confidence": 0.5,
+  "supporting_evidence": [
+    {
+      "source": "pod_log",
+      "pod": "demo-app-abc",
+      "timestamp": null,
+      "evidence": "(no logs)"
+    }
+  ],
+  "suggested_fix": "[MOCK] Investigate the reported root cause.",
+  "recommended_commands": [
+    "kubectl describe pod -n demo demo-app-abc"
+  ],
+  "human_verification_steps": [
+    "Check the logs manually",
+    "Verify environment variables"
+  ]
+}

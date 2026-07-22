@@ -1,0 +1,22 @@
+{
+  "scenario_id": "07-liveness",
+  "description": "Liveness probe path set to /fault/slow causing timeouts and restarts",
+  "true_root_cause": "Liveness probe failing because /fault/slow endpoint exceeds probe timeout",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "probe",
+  "true_severity": "high",
+  "expected_log_patterns": [
+    "liveness probe failed",
+    "timeout",
+    "Slow endpoint"
+  ],
+  "expected_event_reasons": ["Unhealthy", "LivenessProbeFailed", "Killing"],
+  "correct_remediation_keywords": [
+    "liveness probe",
+    "path",
+    "probe",
+    "timeout",
+    "deployment"
+  ],
+  "notes": "Pod restarts repeatedly because liveness probe times out on /fault/slow."
+}

@@ -1,0 +1,22 @@
+{
+  "scenario_id": "10-wrong-port",
+  "description": "Service targetPort set to 9999 but pod listens on 8000",
+  "true_root_cause": "Service demo-app-svc forwards traffic to port 9999 but pod listens on 8000",
+  "true_affected_component": "demo-app-svc",
+  "true_failure_category": "network",
+  "true_severity": "medium",
+  "expected_log_patterns": [
+    "connection refused",
+    "port",
+    "9999"
+  ],
+  "expected_event_reasons": [],
+  "correct_remediation_keywords": [
+    "targetPort",
+    "port",
+    "service",
+    "8000",
+    "endpoint"
+  ],
+  "notes": "Pod runs fine but Service cannot reach it. Diagnosis requires correlating Service and Pod."
+}

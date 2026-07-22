@@ -1,0 +1,83 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-services:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - { name: gateway, context: ., file: services/gateway/Dockerfile }
+          - { name: orchestrator, context: ., file: services/orchestrator/Dockerfile }
+          - { name: collector, context: ., file: services/collector/Dockerfile }
+          - { name: processor, context: ., file: services/processor/Dockerfile }
+          - { name: llm, context: ., file: services/llm/Dockerfile }
+          - { name: reports, context: ., file: services/reports/Dockerfile }
+          - { name: scenario, context: ., file: services/scenario/Dockerfile }
+          - { name: frontend, context: ./frontend, file: frontend/Dockerfile }
+          - { name: demo-app, context: ./demo-app, file: demo-app/Dockerfile }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.name }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ./${{ matrix.file }}
+          push: false
+          tags: k8s-llm-${{ matrix.name }}:latest
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  publish:
+    needs: build-services
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - { name: gateway-svc, context: ., file: services/gateway/Dockerfile }
+          - { name: orchestrator-svc, context: ., file: services/orchestrator/Dockerfile }
+          - { name: collector-svc, context: ., file: services/collector/Dockerfile }
+          - { name: processor-svc, context: ., file: services/processor/Dockerfile }
+          - { name: llm-svc, context: ., file: services/llm/Dockerfile }
+          - { name: reports-svc, context: ., file: services/reports/Dockerfile }
+          - { name: scenario-svc, context: ., file: services/scenario/Dockerfile }
+          - { name: frontend, context: ./frontend, file: frontend/Dockerfile }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.name }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ./${{ matrix.file }}
+          push: true
+          tags: ghcr.io/${{ github.repository }}/${{ matrix.name }}:latest
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}

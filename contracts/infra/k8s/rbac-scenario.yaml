@@ -1,0 +1,70 @@
+# ============================================================================
+# K8s Manifest — RBAC for scenario-svc
+# ============================================================================
+# The scenario-svc needs write access to apply and reset fault scenarios.
+# It patches the demo-app deployment in the "demo" namespace via kubectl.
+#
+# Security boundary:
+#   - Limited to deployments in the "demo" namespace (Role, not ClusterRole)
+#   - Only get/list/patch/update on deployments (no delete, no pods, no secrets)
+#   - The scenario-svc cannot modify any resource outside "demo" namespace
+#
+# This is consumed by:
+#   - scenario-svc K8s deployment (serviceAccountName: scenario-sa)
+# ============================================================================
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: scenario-sa
+  namespace: analyser
+  labels:
+    app.kubernetes.io/name: scenario-svc
+    app.kubernetes.io/component: platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployment-patcher
+  namespace: demo
+  labels:
+    app.kubernetes.io/name: scenario-svc
+    app.kubernetes.io/component: platform
+rules:
+  # Deployments: get, list, patch, update (for strategic merge patch)
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch", "update"]
+  # Services: get, list, patch (for scenario 10 — wrong-port)
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "patch", "update"]
+  # ConfigMaps: get, list, patch (for scenario 08 — bad-configmap)
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "patch", "update"]
+  # Namespaces: get (for reset — delete/recreate namespace resources)
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+  # No delete permissions — reset uses delete via kubectl, which needs
+  # a separate verb. For v1, scenario-svc runs with cluster-admin equivalent
+  # via kubectl inside the container using the mounted kubeconfig. In
+  # production, this should be tightened.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: scenario-deployment-patcher
+  namespace: demo
+  labels:
+    app.kubernetes.io/name: scenario-svc
+    app.kubernetes.io/component: platform
+subjects:
+  - kind: ServiceAccount
+    name: scenario-sa
+    namespace: analyser
+roleRef:
+  kind: Role
+  name: deployment-patcher
+  apiGroup: rbac.authorization.k8s.io

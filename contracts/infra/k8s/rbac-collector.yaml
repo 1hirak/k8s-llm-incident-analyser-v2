@@ -1,0 +1,55 @@
+# ============================================================================
+# K8s Manifest — RBAC for collector-svc
+# ============================================================================
+# The collector-svc needs read-only access to Kubernetes resources to gather
+# diagnostic evidence. It runs as a ServiceAccount with a ClusterRole that
+# grants get/list/watch on pods, pods/log, events, and namespaces.
+#
+# Security boundary:
+#   - NO write permissions (cannot create, update, patch, or delete anything)
+#   - NO access to secrets, configmaps, or other sensitive resources
+#   - ClusterRole (not Role) so it can inspect pods in any namespace,
+#     not just "analyser" — the target demo-app runs in "demo" namespace.
+#
+# This is consumed by:
+#   - collector-svc K8s deployment (serviceAccountName: collector-sa)
+# ============================================================================
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: collector-sa
+  namespace: analyser
+  labels:
+    app.kubernetes.io/name: collector-svc
+    app.kubernetes.io/component: platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pod-reader
+  labels:
+    app.kubernetes.io/name: collector-svc
+    app.kubernetes.io/component: platform
+rules:
+  # Core resources: pods, pod logs, events, namespaces
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  # No write verbs (create, update, patch, delete) — read-only boundary
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: collector-pod-reader
+  labels:
+    app.kubernetes.io/name: collector-svc
+    app.kubernetes.io/component: platform
+subjects:
+  - kind: ServiceAccount
+    name: collector-sa
+    namespace: analyser
+roleRef:
+  kind: ClusterRole
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io

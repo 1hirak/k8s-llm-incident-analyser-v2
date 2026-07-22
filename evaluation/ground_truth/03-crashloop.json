@@ -1,0 +1,22 @@
+{
+  "scenario_id": "03-crashloop",
+  "description": "Container command set to nonexistent binary /bin/nonexistent",
+  "true_root_cause": "Container command references nonexistent executable /bin/nonexistent",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "crash",
+  "true_severity": "critical",
+  "expected_log_patterns": [
+    "executable file not found",
+    "no such file or directory",
+    "StartError"
+  ],
+  "expected_event_reasons": ["BackOff", "Failed"],
+  "correct_remediation_keywords": [
+    "command",
+    "executable",
+    "container",
+    "image",
+    "deployment"
+  ],
+  "notes": "Pod enters CrashLoopBackOff because container cannot start."
+}

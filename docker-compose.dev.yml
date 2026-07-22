@@ -1,0 +1,73 @@
+# ============================================================================
+# Docker Compose Dev Override — hot-reload for local development
+# ============================================================================
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Mirrors contracts/infra/docker-compose.dev.yml with repo-root-relative
+# paths. Source code is bind-mounted; uvicorn runs with --reload; Next.js
+# runs in dev mode with HMR.
+# ============================================================================
+
+services:
+
+  frontend:
+    build:
+      target: dev
+    command: npm run dev
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: "http://localhost:8000"
+      INTERNAL_API_URL: "http://gateway:8000"
+
+  gateway:
+    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+    volumes:
+      - ./services/gateway/app:/app/app:ro
+    environment:
+      LOG_LEVEL: DEBUG
+
+  orchestrator:
+    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
+    volumes:
+      - ./services/orchestrator/app:/app/app:ro
+    environment:
+      LOG_LEVEL: DEBUG
+
+  collector:
+    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8002
+    volumes:
+      - ./services/collector/app:/app/app:ro
+    environment:
+      LOG_LEVEL: DEBUG
+
+  processor:
+    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8003
+    volumes:
+      - ./services/processor/app:/app/app:ro
+    environment:
+      LOG_LEVEL: DEBUG
+
+  llm:
+    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8004
+    volumes:
+      - ./services/llm/app:/app/app:ro
+    environment:
+      LOG_LEVEL: DEBUG
+
+  reports:
+    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8005
+    volumes:
+      - ./services/reports/app:/app/app:ro
+    environment:
+      LOG_LEVEL: DEBUG
+
+  scenario:
+    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8006
+    volumes:
+      - ./services/scenario/app:/app/app:ro
+    environment:
+      LOG_LEVEL: DEBUG

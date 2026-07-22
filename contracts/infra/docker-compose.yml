@@ -1,0 +1,392 @@
+# ============================================================================
+# Infrastructure Contract — Docker Compose (Production-like Local Stack)
+# ============================================================================
+# This file defines the complete runtime topology for the K8s LLM Incident
+# Analyser microservices platform. It is the Single Source of Truth for:
+#   - Service names and network aliases
+#   - Port mappings (host:container)
+#   - Inter-service dependencies (depends_on with health checks)
+#   - Environment variable names (values come from .env)
+#   - Volume mounts (kubeconfig, SQLite data, Redis data)
+#
+# Monorepo layout: all build contexts are relative to this file's location
+# (contracts/infra/). The repo-root docker-compose.yml mirrors this file
+# with contexts relative to the repo root.
+#
+# Port assignments (must match OpenAPI servers: URLs):
+#   3000 → frontend (Next.js)
+#   8000 → gateway-svc (FastAPI)
+#   8001 → orchestrator-svc (FastAPI)
+#   8002 → collector-svc (FastAPI)
+#   8003 → processor-svc (FastAPI)
+#   8004 → llm-svc (FastAPI)
+#   8005 → reports-svc (FastAPI)
+#   8006 → scenario-svc (FastAPI)
+#   6379 → redis
+#   5432 → postgres (demo-app's database, not platform infrastructure)
+#   8080 → demo-app (fault-injectable workload, host port 8080)
+#
+# Network: analyser-net (bridge) — all services communicate over this
+# network using service names as hostnames (e.g. http://collector:8002).
+# ============================================================================
+
+services:
+
+  # --------------------------------------------------------------------------
+  # Frontend (Next.js)
+  # --------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+      args:
+        # NEXT_PUBLIC_* vars are inlined at build time. Must be a
+        # browser-reachable address (the gateway's published host port).
+        NEXT_PUBLIC_API_URL: "http://localhost:8000"
+        # INTERNAL_API_URL is used for server-side data fetching (SSR).
+        # Uses Docker network hostname so the Next.js server can reach
+        # the gateway from inside its own container.
+        INTERNAL_API_URL: "http://gateway:8000"
+    image: k8s-llm-frontend:latest
+    container_name: frontend
+    ports:
+      - "3000:3000"
+    environment:
+      # The frontend calls the gateway, not internal services directly.
+      # NEXT_PUBLIC_API_URL is used client-side (must be localhost for browser).
+      NEXT_PUBLIC_API_URL: "http://localhost:8000"
+      # INTERNAL_API_URL for server-side SSR data fetching.
+      INTERNAL_API_URL: "http://gateway:8000"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - analyser-net
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Gateway Service (public API entry point)
+  # --------------------------------------------------------------------------
+  gateway:
+    build:
+      context: ../../
+      dockerfile: services/gateway/Dockerfile
+    image: k8s-llm-gateway-svc:latest
+    container_name: gateway
+    ports:
+      - "8000:8000"
+    environment:
+      # Internal URL for the orchestrator (Docker network DNS)
+      ORCHESTRATOR_URL: "http://orchestrator:8001"
+      # Internal URL for reports-svc (for direct proxy of /api/reports, /api/stats)
+      REPORTS_URL: "http://reports:8005"
+      # Internal URL for scenario-svc (for /api/scenarios proxy)
+      SCENARIO_URL: "http://scenario:8006"
+      # Internal URL for llm-svc (for /health provider info)
+      LLM_URL: "http://llm:8004"
+      # Internal URL for collector-svc (for /health cluster status)
+      COLLECTOR_URL: "http://collector:8002"
+      # Rate limiting (requests per minute per IP)
+      RATE_LIMIT_PER_MINUTE: "60"
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+      reports:
+        condition: service_healthy
+      scenario:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - analyser-net
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Orchestrator Service (pipeline coordination + SSE + Redis)
+  # --------------------------------------------------------------------------
+  orchestrator:
+    build:
+      context: ../../
+      dockerfile: services/orchestrator/Dockerfile
+    image: k8s-llm-orchestrator-svc:latest
+    container_name: orchestrator
+    ports:
+      - "8001:8001"
+    environment:
+      # Redis connection (job state + pub/sub)
+      REDIS_URL: "redis://redis:6379/0"
+      # Internal service URLs (Docker network DNS)
+      COLLECTOR_URL: "http://collector:8002"
+      PROCESSOR_URL: "http://processor:8003"
+      LLM_URL: "http://llm:8004"
+      REPORTS_URL: "http://reports:8005"
+      # Pipeline timeout (seconds) — kills the job if it exceeds this
+      PIPELINE_TIMEOUT: "120"
+    depends_on:
+      redis:
+        condition: service_healthy
+      collector:
+        condition: service_healthy
+      processor:
+        condition: service_healthy
+      llm:
+        condition: service_healthy
+      reports:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - analyser-net
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Collector Service (kubectl wrapper, read-only K8s access)
+  # --------------------------------------------------------------------------
+  collector:
+    build:
+      context: ../../
+      dockerfile: services/collector/Dockerfile
+    image: k8s-llm-collector-svc:latest
+    container_name: collector
+    ports:
+      - "8002:8002"
+    environment:
+      # kubectl subprocess timeout per call (seconds)
+      KUBECTL_TIMEOUT: "30"
+      # Default tail lines for kubectl logs
+      KUBECTL_LOG_TAIL: "500"
+    volumes:
+      # Bind-mount kubeconfig so kubectl inside the container can reach the cluster.
+      # For minikube: ~/.kube/config + ~/.minikube (certs)
+      # For k3s on EC2: /etc/rancher/k3s/k3s.yaml copied to ~/.kube/config
+      - ${HOME}/.kube/config:/root/.kube/config:ro
+      - ${HOME}/.minikube:${HOME}/.minikube:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - analyser-net
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Processor Service (preprocess + redact, pure CPU)
+  # --------------------------------------------------------------------------
+  processor:
+    build:
+      context: ../../
+      dockerfile: services/processor/Dockerfile
+    image: k8s-llm-processor-svc:latest
+    container_name: processor
+    ports:
+      - "8003:8003"
+    environment:
+      # Preprocessor settings (must match the monolith defaults)
+      MAX_LOG_LINES: "100"
+      CONTEXT_WINDOW: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - analyser-net
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # LLM Service (4 providers, API keys live here)
+  # --------------------------------------------------------------------------
+  llm:
+    build:
+      context: ../../
+      dockerfile: services/llm/Dockerfile
+    image: k8s-llm-llm-svc:latest
+    container_name: llm
+    ports:
+      - "8004:8004"
+    environment:
+      # Provider selection: mock | openai | anthropic | deepseek
+      LLM_PROVIDER: "${LLM_PROVIDER:-mock}"
+      # Provider API keys (only the selected provider's key is required)
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      # Model name override (defaults are provider-specific)
+      LLM_MODEL: "${LLM_MODEL:-}"
+      # Max tokens for LLM response
+      LLM_MAX_TOKENS: "${LLM_MAX_TOKENS:-2000}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - analyser-net
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Reports Service (SQLite persistence, single writer)
+  # --------------------------------------------------------------------------
+  reports:
+    build:
+      context: ../../
+      dockerfile: services/reports/Dockerfile
+    image: k8s-llm-reports-svc:latest
+    container_name: reports
+    ports:
+      - "8005:8005"
+    environment:
+      # SQLite database file path (inside the container, on the mounted volume)
+      DATABASE_PATH: "/data/reports.db"
+    volumes:
+      # Persist SQLite database across container restarts
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - analyser-net
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Scenario Service (fault injection via kubectl, write K8s access)
+  # --------------------------------------------------------------------------
+  scenario:
+    build:
+      context: ../../
+      dockerfile: services/scenario/Dockerfile
+    image: k8s-llm-scenario-svc:latest
+    container_name: scenario
+    ports:
+      - "8006:8006"
+    environment:
+      # K8s namespace for the demo app
+      K8S_NAMESPACE: "demo"
+      # Path to the scenarios directory (mounted from the repo)
+      SCENARIOS_DIR: "/k8s/scenarios"
+      # Path to the healthy baseline manifests
+      BASE_DIR: "/k8s/base"
+      # Path to ground-truth metadata for scenario summaries (optional)
+      GROUND_TRUTH_DIR: "/evaluation/ground_truth"
+    volumes:
+      # Bind-mount kubeconfig (same as collector — needs kubectl)
+      - ${HOME}/.kube/config:/root/.kube/config:ro
+      - ${HOME}/.minikube:${HOME}/.minikube:ro
+      # Mount the k8s/ and evaluation/ directories so the service can read
+      # fault.yaml files, apply/reset base manifests, and scenario metadata.
+      - ../../k8s:/k8s:ro
+      - ../../evaluation:/evaluation:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - analyser-net
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Redis (job state + pub/sub for SSE)
+  # --------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    # AOF persistence so jobs survive Redis restart
+    command: redis-server --appendonly yes --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - analyser-net
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Demo App (fault-injectable workload — NOT platform infrastructure)
+  # --------------------------------------------------------------------------
+  # The demo app is the target workload that the analyser diagnoses.
+  # It runs inside Docker for the docker-compose stack, or inside k8s
+  # for the k3s/minikube stack. When running against a real k8s cluster,
+  # this service is not used — the collector talks to the k8s cluster
+  # directly via the mounted kubeconfig.
+  demo-app:
+    build:
+      context: ../../demo-app
+      dockerfile: Dockerfile
+    image: k8s-demo-app:latest
+    container_name: demo-app
+    ports:
+      - "8080:8000"
+    environment:
+      DATABASE_URL: "postgresql://demo:demo@db:5432/demo"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - analyser-net
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # PostgreSQL (demo app's database — NOT platform infrastructure)
+  # --------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: demo-db
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: demo
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - analyser-net
+    restart: unless-stopped
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  analyser-net:
+    driver: bridge
+    name: analyser-net
+
+# ============================================================================
+# Volumes
+# ============================================================================
+volumes:
+  redis-data:
+    name: analyser-redis-data
+  pg-data:
+    name: analyser-pg-data

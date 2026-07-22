@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+        suite:
+          - shared
+          - collector
+          - processor
+          - llm
+          - reports
+          - orchestrator
+          - gateway
+          - scenario
+          - root
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./services/shared
+          pip install -r requirements.txt -r requirements-dev.txt
+          pip install "fakeredis>=2.26"
+
+      - name: Lint with ruff
+        if: matrix.suite == 'root'
+        run: ruff check . --extend-ignore E501
+
+      - name: Run service suite
+        if: matrix.suite != 'root'
+        run: |
+          cd services/${{ matrix.suite }}
+          python -m pytest -q
+
+      - name: Run root suite
+        if: matrix.suite == 'root'
+        run: python -m pytest tests -v
+        env:
+          LLM_PROVIDER: mock
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: cd frontend && npm ci
+
+      - name: Generate types from contracts
+        run: cd frontend && npm run generate:types
+
+      - name: Lint
+        run: cd frontend && npm run lint
+
+      - name: Build
+        run: cd frontend && npm run build

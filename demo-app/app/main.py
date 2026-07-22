@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    startup_fault = os.environ.get("STARTUP_FAULT", "").lower()
+    if startup_fault == "crash":
+        logger.error("FATAL: STARTUP_FAULT=crash -- raising exception on startup")
+        raise RuntimeError("Deliberate startup crash for scenario testing")
     db_url = os.environ.get("DATABASE_URL")
     if not db_url:
         logger.error("FATAL: DATABASE_URL environment variable is not set")

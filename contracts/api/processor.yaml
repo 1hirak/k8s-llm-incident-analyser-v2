@@ -1,0 +1,99 @@
+# ============================================================================
+# OpenAPI 3.1 Contract — processor-svc (Internal)
+# ============================================================================
+# The processor combines the preprocessor (noise/signal filtering with
+# context windows) and the redactor (PII/secret masking). It is a pure
+# CPU service — no database, no Redis, no external API calls.
+#
+# This service is called by:
+#   - orchestrator-svc (POST /process)
+#
+# This service calls:
+#   - nothing (pure Python transforms)
+#
+# Shared schemas (raw_evidence, evidence_package) are referenced from
+# orchestrator.yaml.
+# ============================================================================
+
+openapi: 3.1.0
+info:
+  title: processor-svc — Internal API
+  version: 1.0.0
+  description: |
+    Internal API for the evidence processor.
+
+    Combines two pipeline stages into one service:
+    1. Preprocessing — filters noise lines (health probes, metrics),
+       keeps signal lines (errors, exceptions, k8s failure states) with
+       a configurable context window (±3 lines), deduplicates, caps at
+       100 lines.
+    2. Redaction — masks 7 categories of secrets (passwords, API keys,
+       database URLs, auth headers, emails) before evidence is sent to
+       the LLM.
+
+    Both stages are pure Python with no I/O — sub-millisecond latency.
+servers:
+  - url: http://processor:8003
+    description: Docker network internal
+
+tags:
+  - name: Health
+  - name: Process
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Processor health check
+      operationId: getProcessorHealth
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/health_response'
+              example:
+                status: ok
+                service: processor-svc
+                version: 0.1.0
+
+  /process:
+    post:
+      tags: [Process]
+      summary: Preprocess and redact raw evidence
+      description: |
+        Takes RawEvidence (from collector-svc) and returns an
+        EvidencePackage with:
+        - Filtered current_logs and previous_logs (noise removed, signal kept + context)
+        - Truncated pod_status_summary (max 2000 chars)
+        - Extracted k8s_events_filtered (Warning + signal events only)
+        - All fields redacted (secrets masked with category tags like [API_KEY=REDACTED])
+      operationId: processEvidence
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'orchestrator.yaml#/components/schemas/raw_evidence'
+      responses:
+        '200':
+          description: Processed and redacted evidence package
+          content:
+            application/json:
+              schema:
+                $ref: 'orchestrator.yaml#/components/schemas/evidence_package'
+              example:
+                namespace: demo
+                pod_name: demo-app-abc123
+                current_logs: ""
+                previous_logs: ""
+                pod_status_summary: "Name: demo-app-abc123\n...\n    Reason: OOMKilled\n    Exit Code: 137\n    Restart Count: 3"
+                k8s_events_filtered: "Warning Killing: Container killed due to OOMKilled\nWarning BackOff: Back-off restarting"
+                restart_count: 3
+        '500':
+          description: Processing failed
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'

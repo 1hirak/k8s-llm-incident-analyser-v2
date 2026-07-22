@@ -1,0 +1,23 @@
+{
+  "scenario_id": "05-oom",
+  "description": "Container memory limit reduced to 32Mi causing OOMKilled when app allocates memory",
+  "true_root_cause": "Container exceeded memory limit and was terminated by OOMKiller",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "resource",
+  "true_severity": "high",
+  "expected_log_patterns": [
+    "OOMKilled",
+    "memory",
+    "out of memory",
+    "memory allocation"
+  ],
+  "expected_event_reasons": ["Killing", "BackOff"],
+  "correct_remediation_keywords": [
+    "memory",
+    "limit",
+    "resources",
+    "container",
+    "deployment"
+  ],
+  "notes": "Pod status will show Reason: OOMKilled. Requires /fault/oom endpoint to be hit."
+}

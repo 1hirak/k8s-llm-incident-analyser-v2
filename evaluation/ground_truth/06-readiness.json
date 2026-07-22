@@ -1,0 +1,21 @@
+{
+  "scenario_id": "06-readiness",
+  "description": "Readiness probe path set to /does-not-exist returning 404",
+  "true_root_cause": "Readiness probe failing because endpoint /does-not-exist returns 404",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "probe",
+  "true_severity": "medium",
+  "expected_log_patterns": [
+    "readiness probe failed",
+    "404",
+    "Not Found"
+  ],
+  "expected_event_reasons": ["Unhealthy", "ReadinessProbeFailed"],
+  "correct_remediation_keywords": [
+    "readiness probe",
+    "path",
+    "probe",
+    "deployment"
+  ],
+  "notes": "Pod stays Running but Ready=False. Events show ReadinessProbeFailed."
+}

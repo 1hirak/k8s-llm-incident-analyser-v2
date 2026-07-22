@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "k8s-llm-shared"
+version = "1.0.0"
+description = "Shared Pydantic contract models for the K8s LLM Incident Analyser platform"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic==2.10.*",
+    "uuid-utils>=0.10",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

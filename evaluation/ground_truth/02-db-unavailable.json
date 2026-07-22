@@ -1,0 +1,23 @@
+{
+  "scenario_id": "02-db-unavailable",
+  "description": "DATABASE_URL set to unreachable hostname 'postgresql://unavailable:5432/db'",
+  "true_root_cause": "Dependent database service is unreachable at unavailable:5432",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "dependency",
+  "true_severity": "high",
+  "expected_log_patterns": [
+    "connection refused",
+    "database",
+    "unavailable",
+    "ready"
+  ],
+  "expected_event_reasons": ["Unhealthy", "BackOff"],
+  "correct_remediation_keywords": [
+    "DATABASE_URL",
+    "connection",
+    "database",
+    "network",
+    "service"
+  ],
+  "notes": "Readiness probe fails because database connection check returns error."
+}

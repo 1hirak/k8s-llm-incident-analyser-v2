@@ -1,0 +1,67 @@
+# scenario-svc — fault injection (write access via scenario-sa)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scenario
+  namespace: analyser
+  labels:
+    app.kubernetes.io/name: scenario-svc
+    app.kubernetes.io/component: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: scenario
+  template:
+    metadata:
+      labels:
+        app: scenario
+    spec:
+      serviceAccountName: scenario-sa
+      containers:
+        - name: scenario
+          image: k8s-llm-scenario-svc:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8006
+          env:
+            - name: K8S_NAMESPACE
+              value: "demo"
+            - name: SCENARIOS_DIR
+              value: "/k8s/scenarios"
+            - name: BASE_DIR
+              value: "/k8s/base"
+            - name: GROUND_TRUTH_DIR
+              value: "/evaluation/ground_truth"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8006
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8006
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 100m
+            limits:
+              memory: 256Mi
+              cpu: 300m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scenario
+  namespace: analyser
+spec:
+  selector:
+    app: scenario
+  ports:
+    - port: 8006
+      targetPort: 8006

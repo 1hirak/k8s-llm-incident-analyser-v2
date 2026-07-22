@@ -1,0 +1,394 @@
+# ============================================================================
+# OpenAPI 3.1 Contract — reports-svc (Internal)
+# ============================================================================
+# The reports service owns the SQLite database (incidents + analysis_jobs
+# tables). It is the single writer to the database file. Other services
+# access report data via this service's API, never directly.
+#
+# This service is called by:
+#   - orchestrator-svc (POST /reports to save, POST /jobs to archive job state)
+#   - gateway-svc (GET /reports, GET /reports/{id}, GET /stats — proxied)
+#
+# This service calls:
+#   - nothing (owns the database, serves read/write requests)
+#
+# Shared schemas (incident_report, report_summary, job_state, stats_response)
+# are referenced from gateway.yaml.
+# ============================================================================
+
+openapi: 3.1.0
+info:
+  title: reports-svc — Internal API
+  version: 1.0.0
+  description: |
+    Internal API for the reports persistence service.
+
+    Owns a SQLite database (WAL mode) with two tables:
+    - incidents: one row per completed IncidentReport
+    - analysis_jobs: one row per analysis job (durable snapshot of Redis state)
+
+    The service is the single writer to the SQLite file. Concurrent reads
+    are safe in WAL mode (gateway, orchestrator can read while reports-svc
+    writes).
+
+    Migrations: the schema.sql contract file is executed on startup if
+    the database file does not exist. No migration framework in v1 — the
+    schema is simple enough for idempotent CREATE IF NOT EXISTS.
+servers:
+  - url: http://reports:8005
+    description: Docker network internal
+
+components:
+  schemas:
+    save_report_request:
+      type: object
+      description: |
+        Request to persist an IncidentReport. The orchestrator sends this
+        after the LLM returns a valid report. The namespace and pod_name
+        are extracted from the job context (not from the report itself).
+      required:
+        - report
+        - namespace
+        - pod_name
+        - job_id
+      properties:
+        report:
+          $ref: 'gateway.yaml#/components/schemas/incident_report'
+        namespace:
+          type: string
+          example: demo
+        pod_name:
+          type: string
+          example: demo-app-abc123
+        job_id:
+          type: string
+          format: uuid
+          description: The job that produced this report (for FK linking in analysis_jobs).
+
+    save_report_response:
+      type: object
+      required:
+        - incident_id
+      properties:
+        incident_id:
+          type: string
+          format: uuid
+          description: The saved report's incident_id.
+
+    save_job_request:
+      type: object
+      description: |
+        Request to create or update a job record in SQLite (durable
+        snapshot). The orchestrator calls this when a job is created
+        and when it reaches a terminal state (done or failed).
+      required:
+        - job_id
+        - namespace
+        - pod_name
+        - status
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        namespace:
+          type: string
+        pod_name:
+          type: string
+        status:
+          $ref: 'gateway.yaml#/components/schemas/job_status_enum'
+        stage:
+          type: string
+          nullable: true
+        incident_id:
+          type: string
+          format: uuid
+          nullable: true
+        latency_ms:
+          type: integer
+          format: int32
+          nullable: true
+        error:
+          type: string
+          nullable: true
+
+tags:
+  - name: Health
+  - name: Reports
+  - name: Jobs
+  - name: Stats
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Reports service health check
+      description: |
+        Returns service health. Does NOT check database connectivity —
+        that is checked on each request.
+      operationId: getReportsHealth
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/health_response'
+              example:
+                status: ok
+                service: reports-svc
+                version: 0.1.0
+
+  # --------------------------------------------------------------------------
+  # Reports CRUD
+  # --------------------------------------------------------------------------
+  /reports:
+    post:
+      tags: [Reports]
+      summary: Save an incident report to the database
+      description: |
+        Persists a completed IncidentReport to the incidents table.
+        Also updates the linked analysis_jobs row with the incident_id
+        and terminal status.
+      operationId: saveReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/save_report_request'
+      responses:
+        '201':
+          description: Report saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/save_report_response'
+        '500':
+          description: Database write failed
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'
+
+    get:
+      tags: [Reports]
+      summary: List reports (paginated, filterable)
+      operationId: listReports
+      parameters:
+        - name: namespace
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: pod_name
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: category
+          in: query
+          required: false
+          schema:
+            $ref: 'gateway.yaml#/components/schemas/failure_category'
+        - name: severity
+          in: query
+          required: false
+          schema:
+            $ref: 'gateway.yaml#/components/schemas/severity'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Paginated report summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, count, limit, offset]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: 'gateway.yaml#/components/schemas/report_summary'
+                  count:
+                    type: integer
+                    format: int32
+                  limit:
+                    type: integer
+                    format: int32
+                  offset:
+                    type: integer
+                    format: int32
+        '500':
+          description: Database read failed
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'
+
+  /reports/{incident_id}:
+    get:
+      tags: [Reports]
+      summary: Get a full incident report by ID
+      operationId: getReport
+      parameters:
+        - name: incident_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Full incident report
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/incident_report'
+        '404':
+          description: Report not found
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'
+        '500':
+          description: Database read failed
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'
+
+  # --------------------------------------------------------------------------
+  # Job archival (durable snapshot in SQLite)
+  # --------------------------------------------------------------------------
+  /jobs:
+    post:
+      tags: [Jobs]
+      summary: Create or update a job record
+      description: |
+        Upserts a job record in the analysis_jobs table. Called by the
+        orchestrator when a job is created and when it reaches a
+        terminal state (done or failed).
+      operationId: saveJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/save_job_request'
+      responses:
+        '201':
+          description: Job record saved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job_id]
+                properties:
+                  job_id:
+                    type: string
+                    format: uuid
+        '500':
+          description: Database write failed
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'
+
+    get:
+      tags: [Jobs]
+      summary: List job records (paginated, filterable)
+      operationId: listJobs
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: 'gateway.yaml#/components/schemas/job_status_enum'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Paginated job list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, count, limit, offset]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: 'gateway.yaml#/components/schemas/job_state'
+                  count:
+                    type: integer
+                    format: int32
+                  limit:
+                    type: integer
+                    format: int32
+                  offset:
+                    type: integer
+                    format: int32
+
+  # --------------------------------------------------------------------------
+  # Stats (dashboard aggregates)
+  # --------------------------------------------------------------------------
+  /stats:
+    get:
+      tags: [Stats]
+      summary: Get dashboard statistics
+      description: |
+        Computes aggregate metrics from the incidents and analysis_jobs
+        tables. Used by the frontend dashboard page.
+      operationId: getStats
+      parameters:
+        - name: range
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [24h, 7d, 30d]
+            default: 7d
+      responses:
+        '200':
+          description: Dashboard statistics
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/stats_response'
+        '500':
+          description: Database query failed
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'

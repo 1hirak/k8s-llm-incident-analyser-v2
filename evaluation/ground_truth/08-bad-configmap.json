@@ -1,0 +1,23 @@
+{
+  "scenario_id": "08-bad-configmap",
+  "description": "ConfigMap LOG_LEVEL set to invalid value INVALID",
+  "true_root_cause": "ConfigMap demo-config has invalid value INVALID for LOG_LEVEL",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "config",
+  "true_severity": "medium",
+  "expected_log_patterns": [
+    "INVALID",
+    "LOG_LEVEL",
+    "invalid",
+    "configmap"
+  ],
+  "expected_event_reasons": [],
+  "correct_remediation_keywords": [
+    "ConfigMap",
+    "LOG_LEVEL",
+    "configuration",
+    "value",
+    "data"
+  ],
+  "notes": "Application may or may not crash depending on LOG_LEVEL validation. Subtle scenario."
+}

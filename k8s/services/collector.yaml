@@ -1,0 +1,63 @@
+# collector-svc — kubectl wrapper (read-only K8s access via collector-sa)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: collector
+  namespace: analyser
+  labels:
+    app.kubernetes.io/name: collector-svc
+    app.kubernetes.io/component: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: collector
+  template:
+    metadata:
+      labels:
+        app: collector
+    spec:
+      serviceAccountName: collector-sa
+      containers:
+        - name: collector
+          image: k8s-llm-collector-svc:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8002
+          env:
+            - name: KUBECTL_TIMEOUT
+              value: "30"
+            - name: KUBECTL_LOG_TAIL
+              value: "500"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8002
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8002
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 100m
+            limits:
+              memory: 256Mi
+              cpu: 300m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: collector
+  namespace: analyser
+spec:
+  selector:
+    app: collector
+  ports:
+    - port: 8002
+      targetPort: 8002

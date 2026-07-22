@@ -1,0 +1,23 @@
+{
+  "scenario_id": "09-app-exception",
+  "description": "STARTUP_FAULT env var set to crash causing application to raise exception on startup",
+  "true_root_cause": "Application raises unhandled exception due to STARTUP_FAULT=crash on startup",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "crash",
+  "true_severity": "high",
+  "expected_log_patterns": [
+    "Traceback",
+    "Exception",
+    "STARTUP_FAULT",
+    "RuntimeError"
+  ],
+  "expected_event_reasons": ["BackOff", "Failed"],
+  "correct_remediation_keywords": [
+    "STARTUP_FAULT",
+    "exception",
+    "environment variable",
+    "code",
+    "deployment"
+  ],
+  "notes": "Application code raises exception. Stack trace visible in previous container logs."
+}

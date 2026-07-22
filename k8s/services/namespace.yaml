@@ -1,0 +1,18 @@
+# ============================================================================
+# K8s Manifest — Namespace
+# ============================================================================
+# All platform services run in the "analyser" namespace, separate from the
+# "demo" namespace where the target demo-app runs. This separation ensures
+# the analyser platform and the workload it monitors are isolated.
+#
+# The collector-svc's RBAC grants read access across namespaces (ClusterRole)
+# so it can inspect pods in the "demo" namespace. The scenario-svc's RBAC
+# grants patch access to deployments in the "demo" namespace.
+# ============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: analyser
+  labels:
+    app.kubernetes.io/name: k8s-llm-incident-analyser
+    app.kubernetes.io/component: platform

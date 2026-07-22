@@ -9,11 +9,21 @@ DEMO_APP_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "demo-app")
 
 
 def _import_demo_app():
+    saved_path = sys.path[:]
+    saved_modules = {k: v for k, v in sys.modules.items() if k.startswith("app")}
+    for k in list(sys.modules.keys()):
+        if k.startswith("app"):
+            del sys.modules[k]
     sys.path.insert(0, DEMO_APP_PATH)
-    sys.modules.pop("app.main", None)
-    sys.modules.pop("app", None)
-    from app.main import app
-    return app
+    try:
+        from app.main import app
+        return app
+    finally:
+        sys.path = saved_path
+        for k in list(sys.modules.keys()):
+            if k.startswith("app"):
+                del sys.modules[k]
+        sys.modules.update(saved_modules)
 
 
 @pytest.fixture

@@ -1,8 +1,10 @@
-fastapi==0.115.*
-uvicorn[standard]==0.32.*
-pydantic==2.10.*
+# Root-level runtime dependencies.
+#
+# The platform services each pin their own requirements
+# (services/<name>/requirements.txt) and share the contract models via the
+# local k8s-llm-shared package (pip install -e ./services/shared).
+#
+# This file covers what the repo ROOT needs: the evaluation harness
+# (HTTP adapters calling the services) and shared tooling.
 httpx==0.28.*
-python-dotenv==1.0.*
-openai==1.59.*
-anthropic==0.45.*
-structlog==24.*
+pydantic==2.10.*

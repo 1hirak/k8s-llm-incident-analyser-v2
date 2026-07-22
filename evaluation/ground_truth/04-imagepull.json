@@ -1,0 +1,23 @@
+{
+  "scenario_id": "04-imagepull",
+  "description": "Container image set to nonexistent tag demo-app:nonexistent-tag with Always pull policy",
+  "true_root_cause": "Kubernetes cannot pull container image demo-app:nonexistent-tag",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "image",
+  "true_severity": "critical",
+  "expected_log_patterns": [
+    "ImagePullBackOff",
+    "ErrImagePull",
+    "pull access denied",
+    "manifest not found"
+  ],
+  "expected_event_reasons": ["Failed", "BackOff"],
+  "correct_remediation_keywords": [
+    "image",
+    "tag",
+    "registry",
+    "imagePullPolicy",
+    "deployment"
+  ],
+  "notes": "ImagePullBackOff is a clear, unambiguous signal."
+}

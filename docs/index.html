@@ -1,0 +1,2314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>K8s LLM Incident Analyser — Technical Documentation</title>
+<meta name="description" content="LLM-Assisted Log Analysis for Incident Response in Kubernetes Environments — a full technical reference for the K8s LLM Incident Analyser PhD dissertation project.">
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --bg:#0a0e16; --bg-grad-1:#0c1220; --bg-grad-2:#0a0e16;
+  --surface:#111726; --surface-2:#161d2e; --surface-3:#1c2538; --elevated:#202a40;
+  --border:#232c44; --border-soft:#1a2236;
+  --text:#e6edf6; --text-soft:#b8c2d6; --text-muted:#7d8aa6; --text-faint:#56627d;
+  --k8s:#4a8dff; --k8s-deep:#2f6ae0; --k8s-glow:rgba(74,141,255,0.16);
+  --amber:#f0a03f; --amber-soft:rgba(240,160,63,0.14);
+  --teal:#3dd9b0; --teal-soft:rgba(61,217,176,0.14);
+  --rose:#f06b8d; --rose-soft:rgba(240,107,141,0.14);
+  --violet:#a78bfa; --violet-soft:rgba(167,139,250,0.14);
+  --code-bg:#0d1320; --code-border:#1e2740; --code-text:#d6deeb;
+  --code-comment:#5b6885; --code-keyword:#c792ea; --code-string:#c3e88d;
+  --code-number:#f78c6c; --code-func:#82aaff; --code-type:#ffcb6b; --code-decorator:#f0a03f;
+  --sidebar-w:296px; --content-max:980px;
+  --radius:10px; --radius-sm:6px;
+  --shadow:0 8px 32px rgba(0,0,0,0.4); --shadow-sm:0 2px 10px rgba(0,0,0,0.25);
+  --font-display:'Space Grotesk','Segoe UI',system-ui,sans-serif;
+  --font-body:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;
+  --font-mono:'JetBrains Mono','Cascadia Code','SF Mono',Consolas,monospace;
+}
+body.light {
+  --bg:#f6f8fc; --bg-grad-1:#eef2f9; --bg-grad-2:#f6f8fc;
+  --surface:#ffffff; --surface-2:#f3f6fb; --surface-3:#eaeef6; --elevated:#ffffff;
+  --border:#dde3ee; --border-soft:#e7ecf4;
+  --text:#1a2238; --text-soft:#3a4660; --text-muted:#6b7794; --text-faint:#97a2bd;
+  --k8s:#2f6ae0; --k8s-glow:rgba(47,106,224,0.10);
+  --code-bg:#f2f5fa; --code-border:#dde3ee; --code-text:#2a3450;
+  --code-comment:#8a96b3; --code-keyword:#8b2fbf; --code-string:#3f8b3f;
+  --code-number:#c44a18; --code-func:#2f6ae0; --code-type:#b07a00; --code-decorator:#c44a18;
+  --shadow:0 8px 32px rgba(20,40,80,0.10); --shadow-sm:0 2px 10px rgba(20,40,80,0.06);
+}
+*{box-sizing:border-box;}
+html{scroll-behavior:smooth;scroll-padding-top:32px;}
+body{
+  margin:0;font-family:var(--font-body);font-size:15.5px;line-height:1.7;color:var(--text);
+  background:var(--bg);
+  background-image:radial-gradient(1200px 600px at 85% -10%,var(--k8s-glow),transparent 60%),radial-gradient(900px 500px at -10% 20%,var(--violet-soft),transparent 55%),linear-gradient(180deg,var(--bg-grad-1),var(--bg-grad-2));
+  background-attachment:fixed;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+}
+.sidebar{position:fixed;top:0;left:0;bottom:0;width:var(--sidebar-w);background:var(--surface);border-right:1px solid var(--border);overflow-y:auto;padding:26px 22px 60px;z-index:50;transition:transform .28s cubic-bezier(.4,0,.2,1);}
+.sidebar::-webkit-scrollbar{width:8px;}.sidebar::-webkit-scrollbar-thumb{background:var(--border);border-radius:8px;}
+.brand{display:flex;flex-direction:column;gap:4px;padding-bottom:18px;margin-bottom:18px;border-bottom:1px solid var(--border-soft);}
+.brand .mark{display:inline-flex;align-items:center;gap:9px;font-family:var(--font-display);font-weight:700;font-size:16px;letter-spacing:-0.01em;color:var(--text);}
+.brand .mark .helm{width:22px;height:22px;flex:none;display:grid;place-items:center;color:var(--k8s);}
+.brand .sub{font-size:11.5px;color:var(--text-muted);font-family:var(--font-mono);letter-spacing:0.02em;}
+.toc{list-style:none;margin:0;padding:0;}
+.toc a{display:flex;align-items:baseline;gap:9px;padding:6px 10px;font-size:13.5px;color:var(--text-muted);text-decoration:none;border-radius:var(--radius-sm);border-left:2px solid transparent;transition:all .16s ease;line-height:1.4;}
+.toc a:hover{color:var(--text);background:var(--surface-2);}
+.toc a.active{color:var(--k8s);background:var(--k8s-glow);border-left-color:var(--k8s);font-weight:500;}
+.toc a .n{font-family:var(--font-mono);font-size:11.5px;color:var(--text-faint);min-width:20px;text-align:right;}
+.toc a.active .n{color:var(--k8s);}
+.sidebar-foot{margin-top:22px;padding-top:16px;border-top:1px solid var(--border-soft);font-size:11.5px;color:var(--text-faint);font-family:var(--font-mono);line-height:1.6;}
+.topbar{display:none;position:sticky;top:0;z-index:40;background:var(--surface);border-bottom:1px solid var(--border);padding:12px 16px;align-items:center;gap:12px;}
+.topbar button{background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:var(--radius-sm);width:34px;height:34px;cursor:pointer;font-size:16px;}
+.topbar .title{font-family:var(--font-display);font-weight:600;font-size:14px;}
+.main{margin-left:var(--sidebar-w);padding:0 48px 120px;max-width:calc(var(--sidebar-w) + var(--content-max) + 96px);}
+.content{max-width:var(--content-max);margin:0 auto;}
+.hero{padding:72px 0 48px;border-bottom:1px solid var(--border-soft);margin-bottom:56px;}
+.hero .eyebrow{display:inline-flex;align-items:center;gap:8px;font-family:var(--font-mono);font-size:12px;color:var(--k8s);letter-spacing:0.08em;text-transform:uppercase;background:var(--k8s-glow);padding:5px 12px;border-radius:999px;border:1px solid var(--k8s-glow);margin-bottom:22px;}
+.hero .eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--k8s);box-shadow:0 0 10px var(--k8s);}
+.hero h1{font-family:var(--font-display);font-size:clamp(34px,5vw,52px);font-weight:700;line-height:1.05;letter-spacing:-0.025em;margin:0 0 18px;color:var(--text);}
+.hero h1 .accent{color:var(--k8s);}
+.hero .lede{font-size:18px;line-height:1.6;color:var(--text-soft);max-width:720px;margin:0 0 28px;}
+.hero .meta{display:flex;flex-wrap:wrap;gap:10px 22px;font-size:13px;color:var(--text-muted);font-family:var(--font-mono);}
+.hero .meta span{display:inline-flex;align-items:center;gap:7px;}
+.hero .meta .k{color:var(--text-faint);}.hero .meta .v{color:var(--text-soft);}
+section.doc-section{margin-bottom:76px;scroll-margin-top:28px;}
+section.doc-section>h2{font-family:var(--font-display);font-size:30px;font-weight:600;letter-spacing:-0.02em;margin:0 0 8px;color:var(--text);display:flex;align-items:baseline;gap:14px;line-height:1.2;flex-wrap:wrap;}
+section.doc-section>h2 .num{font-family:var(--font-mono);font-size:15px;font-weight:500;color:var(--k8s);background:var(--k8s-glow);padding:3px 9px;border-radius:6px;border:1px solid var(--k8s-glow);flex:none;}
+section.doc-section>h2 .anchor{font-size:16px;color:var(--text-faint);text-decoration:none;font-weight:400;transition:color .15s;}
+section.doc-section>h2 .anchor:hover{color:var(--k8s);}
+section.doc-section>.sec-lede{font-size:16px;color:var(--text-muted);margin:6px 0 26px;max-width:720px;}
+h3{font-family:var(--font-display);font-size:21px;font-weight:600;letter-spacing:-0.01em;margin:42px 0 14px;color:var(--text);display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
+h3 .anchor,h4 .anchor{font-size:14px;color:var(--text-faint);text-decoration:none;font-weight:400;}
+h3 .anchor:hover,h4 .anchor:hover{color:var(--k8s);}
+h4{font-family:var(--font-display);font-size:17px;font-weight:600;margin:28px 0 10px;color:var(--text-soft);}
+p{margin:0 0 16px;}a{color:var(--k8s);text-decoration:none;}a:hover{text-decoration:underline;}
+ul,ol{padding-left:22px;margin:0 0 16px;}li{margin:0 0 7px;}li::marker{color:var(--text-faint);}
+strong{color:var(--text);font-weight:600;}em{color:var(--text-soft);}
+.callout{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--k8s);border-radius:var(--radius);padding:14px 18px;margin:18px 0;font-size:14px;color:var(--text-soft);}
+.callout.amber{border-left-color:var(--amber);background:linear-gradient(90deg,var(--amber-soft),var(--surface) 40%);}
+.callout.teal{border-left-color:var(--teal);background:linear-gradient(90deg,var(--teal-soft),var(--surface) 40%);}
+.callout.rose{border-left-color:var(--rose);background:linear-gradient(90deg,var(--rose-soft),var(--surface) 40%);}
+.callout .label{display:block;font-family:var(--font-mono);font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--k8s);margin-bottom:5px;font-weight:600;}
+.callout.amber .label{color:var(--amber);}.callout.teal .label{color:var(--teal);}.callout.rose .label{color:var(--rose);}
+.callout p:last-child{margin-bottom:0;}
+pre{background:var(--code-bg);border:1px solid var(--code-border);border-radius:var(--radius);padding:18px 20px;margin:18px 0;overflow-x:auto;font-family:var(--font-mono);font-size:13px;line-height:1.65;color:var(--code-text);position:relative;box-shadow:var(--shadow-sm);}
+pre::-webkit-scrollbar{height:8px;}pre::-webkit-scrollbar-thumb{background:var(--border);border-radius:8px;}
+code{font-family:var(--font-mono);font-size:0.88em;background:var(--surface-2);color:var(--code-text);padding:1.5px 6px;border-radius:4px;border:1px solid var(--border-soft);}
+pre code{background:none;border:none;padding:0;font-size:inherit;}
+.code-label{position:absolute;top:0;right:0;font-family:var(--font-mono);font-size:10.5px;color:var(--text-faint);background:var(--surface-2);border-left:1px solid var(--code-border);border-bottom:1px solid var(--code-border);border-radius:0 var(--radius) 0 var(--radius-sm);padding:3px 10px;letter-spacing:0.05em;text-transform:uppercase;}
+.tok-c{color:var(--code-comment);font-style:italic;}.tok-k{color:var(--code-keyword);}.tok-s{color:var(--code-string);}
+.tok-n{color:var(--code-number);}.tok-f{color:var(--code-func);}.tok-t{color:var(--code-type);}.tok-d{color:var(--code-decorator);}
+pre.tree{background:var(--code-bg);border-left:3px solid var(--k8s);color:var(--text-soft);font-size:12.5px;line-height:1.55;}
+pre.tree .cmt{color:var(--code-comment);}
+.table-wrap{overflow-x:auto;margin:18px 0;border-radius:var(--radius);border:1px solid var(--border);box-shadow:var(--shadow-sm);}
+table{border-collapse:collapse;width:100%;font-size:13.5px;background:var(--surface);}
+thead th{background:var(--surface-3);color:var(--text);font-family:var(--font-display);font-weight:600;text-align:left;padding:11px 16px;border-bottom:1px solid var(--border);white-space:nowrap;font-size:13px;letter-spacing:0.01em;}
+tbody td{padding:10px 16px;border-bottom:1px solid var(--border-soft);color:var(--text-soft);vertical-align:top;}
+tbody tr:last-child td{border-bottom:none;}tbody tr:nth-child(even){background:var(--surface-2);}tbody tr:hover{background:var(--surface-3);}
+td code,th code{font-size:12px;}
+.pill{display:inline-block;font-family:var(--font-mono);font-size:11px;font-weight:500;padding:2px 8px;border-radius:999px;letter-spacing:0.02em;border:1px solid transparent;white-space:nowrap;}
+.pill.k8s{color:var(--k8s);background:var(--k8s-glow);border-color:var(--k8s-glow);}
+.pill.amber{color:var(--amber);background:var(--amber-soft);border-color:var(--amber-soft);}
+.pill.teal{color:var(--teal);background:var(--teal-soft);border-color:var(--teal-soft);}
+.pill.rose{color:var(--rose);background:var(--rose-soft);border-color:var(--rose-soft);}
+.pill.violet{color:var(--violet);background:var(--violet-soft);border-color:var(--violet-soft);}
+.pill.muted{color:var(--text-muted);background:var(--surface-2);border-color:var(--border);}
+.mermaid{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px 16px;margin:20px 0;text-align:center;overflow-x:auto;box-shadow:var(--shadow-sm);}
+.mermaid::-webkit-scrollbar{height:8px;}.mermaid::-webkit-scrollbar-thumb{background:var(--border);border-radius:8px;}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin:22px 0;}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;position:relative;overflow:hidden;}
+.stat::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--k8s),var(--violet));}
+.stat .v{font-family:var(--font-display);font-size:28px;font-weight:700;color:var(--text);line-height:1;letter-spacing:-0.02em;}
+.stat .l{font-size:12px;color:var(--text-muted);margin-top:6px;font-family:var(--font-mono);letter-spacing:0.02em;}
+.theme-toggle{position:fixed;bottom:22px;right:22px;z-index:60;background:var(--surface);border:1px solid var(--border);color:var(--text);width:42px;height:42px;border-radius:50%;cursor:pointer;box-shadow:var(--shadow);font-size:18px;display:grid;place-items:center;transition:transform .2s,border-color .2s;}
+.theme-toggle:hover{transform:scale(1.08);border-color:var(--k8s);}
+.to-top{position:fixed;bottom:74px;right:22px;z-index:60;background:var(--surface);border:1px solid var(--border);color:var(--text-muted);width:42px;height:42px;border-radius:50%;cursor:pointer;box-shadow:var(--shadow);font-size:16px;display:grid;place-items:center;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s,border-color .2s;}
+.to-top.show{opacity:1;pointer-events:auto;}.to-top:hover{color:var(--k8s);border-color:var(--k8s);transform:translateY(-2px);}
+@media (max-width:1024px){.sidebar{transform:translateX(-100%);box-shadow:var(--shadow);}.sidebar.open{transform:translateX(0);}.main{margin-left:0;padding:0 24px 100px;}.topbar{display:flex;}.hero{padding:40px 0 36px;}}
+@media (max-width:640px){body{font-size:14.5px;}.main{padding:0 16px 80px;}section.doc-section>h2{font-size:24px;}h3{font-size:18px;}pre{padding:14px 14px;font-size:12px;}.hero h1{font-size:32px;}.hero .lede{font-size:16px;}}
+.backdrop{display:none;position:fixed;inset:0;z-index:45;background:rgba(0,0,0,0.5);backdrop-filter:blur(2px);}.backdrop.show{display:block;}
+hr.sep{border:none;border-top:1px solid var(--border-soft);margin:40px 0;}
+dl.kv{display:grid;grid-template-columns:max-content 1fr;gap:8px 18px;margin:14px 0;}
+dl.kv dt{font-family:var(--font-mono);font-size:12.5px;color:var(--k8s);}
+dl.kv dd{margin:0;font-size:14px;color:var(--text-soft);}
+</style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<aside class="sidebar" id="sidebar">
+  <div class="brand">
+    <span class="mark">
+      <svg class="helm" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M16 3l2.4 5.2 5.6.6-4.2 3.8 1.2 5.6L16 21.4 11 18.2l1.2-5.6L8 8.8l5.6-.6L16 3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        <circle cx="16" cy="13" r="2.2" fill="currentColor"/>
+        <path d="M16 21.4v6M9 27h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      K8s LLM Incident Analyser
+    </span>
+    <span class="sub">technical documentation &middot; v0.1.0</span>
+  </div>
+  <nav>
+    <ul class="toc">
+      <li><a href="#1-executive-summary"><span class="n">01</span>Executive Summary</a></li>
+      <li><a href="#2-system-architecture"><span class="n">02</span>System Architecture</a></li>
+      <li><a href="#3-technology-stack"><span class="n">03</span>Technology Stack</a></li>
+      <li><a href="#4-project-structure"><span class="n">04</span>Project Structure</a></li>
+      <li><a href="#5-build-tooling"><span class="n">05</span>Build &amp; Tooling</a></li>
+      <li><a href="#6-application-bootstrap"><span class="n">06</span>Application Bootstrap</a></li>
+      <li><a href="#7-api-reference"><span class="n">07</span>API Reference</a></li>
+      <li><a href="#8-pipeline-architecture"><span class="n">08</span>Pipeline Architecture</a></li>
+      <li><a href="#9-llm-provider-layer"><span class="n">09</span>LLM Provider Layer</a></li>
+      <li><a href="#10-data-models-schema"><span class="n">10</span>Data Models &amp; Schema</a></li>
+      <li><a href="#11-demo-app-fault-scenarios"><span class="n">11</span>Demo App &amp; Fault Scenarios</a></li>
+      <li><a href="#12-evaluation-framework"><span class="n">12</span>Evaluation Framework</a></li>
+      <li><a href="#13-kubernetes-deployment"><span class="n">13</span>Kubernetes Deployment</a></li>
+      <li><a href="#14-data-flow-traces"><span class="n">14</span>Data Flow Traces</a></li>
+      <li><a href="#15-testing-strategy"><span class="n">15</span>Testing Strategy</a></li>
+      <li><a href="#16-deployment-operations"><span class="n">16</span>Deployment &amp; Operations</a></li>
+    </ul>
+  </nav>
+  <div class="sidebar-foot">
+    PhD Dissertation Project<br>
+    LLM-Assisted Log Analysis<br>
+    for Incident Response in<br>
+    Kubernetes Environments
+  </div>
+</aside>
+<div class="backdrop" id="backdrop"></div>
+
+<!-- TOPBAR (mobile) -->
+<div class="topbar">
+  <button id="menu-btn" aria-label="Toggle navigation">&#9776;</button>
+  <span class="title">K8s LLM Incident Analyser</span>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+<div class="content">
+
+<!-- HERO -->
+<header class="hero">
+  <span class="eyebrow"><span class="dot"></span>PhD Dissertation &middot; Technical Reference</span>
+  <h1>K8s LLM Incident <span class="accent">Analyser</span></h1>
+  <p class="lede">
+    A FastAPI service that collects Kubernetes pod diagnostic evidence, preprocesses and redacts it,
+    sends it to an LLM under a strict JSON schema, and returns a structured
+    <code>IncidentReport</code> &mdash; turning a manual, time-consuming pod-failure investigation into an
+    automated, schema-validated pipeline.
+  </p>
+  <div class="meta">
+    <span><span class="k">title:</span> <span class="v">LLM-Assisted Log Analysis for Incident Response in Kubernetes Environments</span></span>
+    <span><span class="k">framework:</span> <span class="v">FastAPI 0.115 &middot; Python 3.12</span></span>
+    <span><span class="k">tests:</span> <span class="v">339</span></span>
+    <span><span class="k">source:</span> <span class="v">1,406 lines</span></span>
+    <span><span class="k">providers:</span> <span class="v">mock &middot; openai &middot; anthropic &middot; deepseek</span></span>
+  </div>
+</header>
+<!-- ============ 1. EXECUTIVE SUMMARY ============ -->
+<section class="doc-section" id="1-executive-summary">
+  <h2><span class="num">01</span>Executive Summary <a class="anchor" href="#1-executive-summary">#</a></h2>
+  <p class="sec-lede">What the system does, the problem it solves, and the capabilities that make it a defensible research artefact.</p>
+
+  <h3>The Problem <a class="anchor" href="#1-executive-summary">#</a></h3>
+  <p>
+    When a Kubernetes pod enters <code>CrashLoopBackOff</code>, <code>ImagePullBackOff</code>, or starts
+    restarting repeatedly, an on-call engineer must manually run a sequence of <code>kubectl</code>
+    commands &mdash; <code>logs</code>, <code>describe</code>, <code>get events</code> &mdash; read through hundreds
+    of log lines, mentally filter noise from signal, correlate events across resources, and form a
+    hypothesis about the root cause. This is slow, repetitive, and inconsistent across engineers of
+    different experience levels. The cognitive load is highest exactly when time pressure is greatest:
+    during an active incident.
+  </p>
+
+  <h3>The Solution <a class="anchor" href="#1-executive-summary">#</a></h3>
+  <p>
+    The K8s LLM Incident Analyser automates that workflow. Given a namespace and pod name, it runs a
+    five-stage pipeline &mdash; <strong>collect &rarr; preprocess &rarr; redact &rarr; analyse &rarr; validate</strong> &mdash; and
+    returns a single structured <code>IncidentReport</code> containing the likely root cause, the
+    supporting evidence that led to that conclusion, a severity and confidence score, a suggested fix,
+    recommended commands, and human verification steps. The LLM is constrained by a Pydantic schema, so
+    the output is always machine-parseable, never free-form prose.
+  </p>
+
+  <div class="mermaid">
+flowchart LR
+    A["kubectl<br/>subprocess"] --> B["Collector"]
+    B --> C["Preprocessor<br/>noise/signal filter"]
+    C --> D["Redactor<br/>mask PII + secrets"]
+    D --> E["LLM Provider<br/>mock/openai/<br/>anthropic/deepseek"]
+    E --> F["Validator<br/>Pydantic schema"]
+    F --> G["IncidentReport<br/>structured JSON"]
+    style B fill:#4a8dff,color:#fff
+    style C fill:#3dd9b0,color:#0a0e16
+    style D fill:#f0a03f,color:#0a0e16
+    style E fill:#a78bfa,color:#fff
+    style F fill:#f06b8d,color:#fff
+    style G fill:#2f6ae0,color:#fff
+  </div>
+
+  <h3>Key Capabilities <a class="anchor" href="#1-executive-summary">#</a></h3>
+  <div class="stats">
+    <div class="stat"><div class="v">5</div><div class="l">pipeline stages</div></div>
+    <div class="stat"><div class="v">4</div><div class="l">LLM providers</div></div>
+    <div class="stat"><div class="v">10</div><div class="l">fault scenarios</div></div>
+    <div class="stat"><div class="v">339</div><div class="l">tests</div></div>
+    <div class="stat"><div class="v">7</div><div class="l">redaction patterns</div></div>
+    <div class="stat"><div class="v">8</div><div class="l">failure categories</div></div>
+  </div>
+
+  <ul>
+    <li><strong>Pluggable LLM layer.</strong> Swap between Mock, OpenAI, Anthropic, and DeepSeek via a single <code>LLM_PROVIDER</code> environment variable &mdash; no code changes.</li>
+    <li><strong>Schema-locked output.</strong> Every provider returns the same <code>IncidentReport</code> Pydantic model; the validator rejects malformed LLM output before it reaches the caller.</li>
+    <li><strong>Privacy by design.</strong> Seven regex patterns mask API keys, passwords, database URLs, bearer tokens, and emails <em>before</em> any text leaves the cluster.</li>
+    <li><strong>Signal-aware preprocessing.</strong> Health-check noise is stripped; signal lines (errors, OOM, CrashLoopBackOff) are kept with a configurable context window and deduplicated.</li>
+    <li><strong>Reproducible evaluation.</strong> Ten hand-authored fault scenarios with ground-truth JSON let the LLM be benchmarked against two non-LLM baselines (keyword and rule-based).</li>
+    <li><strong>Deployable anywhere.</strong> Docker Compose for local dev, native Kubernetes manifests with RBAC for in-cluster operation.</li>
+  </ul>
+</section>
+
+<!-- ============ 2. SYSTEM ARCHITECTURE ============ -->
+<section class="doc-section" id="2-system-architecture">
+  <h2><span class="num">02</span>System Architecture <a class="anchor" href="#2-system-architecture">#</a></h2>
+  <p class="sec-lede">Three views of the system: the external context, the deployment topology, and the internal component map.</p>
+
+  <h3>Context Diagram <a class="anchor" href="#2-system-architecture">#</a></h3>
+  <p>How the analyser sits between a Kubernetes cluster and an external LLM API, with the on-call engineer as the human consumer of the report.</p>
+  <div class="mermaid">
+flowchart LR
+    Eng["On-call Engineer<br/>or automation"]
+    subgraph Cluster["Kubernetes Cluster"]
+        Pod["Target Pod<br/>demo-app"]
+        K8sAPI["Kubernetes API<br/>kubectl"]
+    end
+    subgraph Analyser["K8s LLM Incident Analyser"]
+        Pipe["Analysis Pipeline<br/>collect -> process -> redact"]
+    end
+    LLM["External LLM Provider<br/>OpenAI / Anthropic / DeepSeek"]
+    Store[("Report Store<br/>./reports/*.json")]
+
+    Eng -->|"POST /analyse/pod/{ns}/{pod}"| Analyser
+    Pod -.->|"logs, events, status"| K8sAPI
+    K8sAPI -->|"subprocess"| Pipe
+    Pipe -->|"redacted evidence"| LLM
+    LLM -->|"structured JSON"| Pipe
+    Pipe -->|"IncidentReport"| Store
+    Store -->|"GET /reports"| Eng
+
+    style Analyser fill:#4a8dff,color:#fff
+    style Cluster fill:#1c2538,color:#e6edf6
+    style LLM fill:#a78bfa,color:#fff
+    style Store fill:#3dd9b0,color:#0a0e16
+  </div>
+
+  <h3>Deployment Topology <a class="anchor" href="#2-system-architecture">#</a></h3>
+  <p>Two deployment targets are supported. Docker Compose runs the analyser alongside a fault-injecting demo app and a Postgres dependency for local development. Kubernetes manifests deploy the analyser in-cluster with a service account that can read pods, logs, and events.</p>
+  <div class="mermaid">
+flowchart TD
+    subgraph Compose["Docker Compose (local dev)"]
+        A2["analyser<br/>:8000"]
+        D2["demo-app<br/>:8001"]
+        DB["postgres:16-alpine"]
+        D2 --> DB
+    end
+    subgraph K8s["Kubernetes (minikube / kind)"]
+        NS["namespace: demo"]
+        subgraph Dep["Deployments"]
+            DA["demo-app<br/>+ probes + limits"]
+            AN["analyser<br/>serviceAccount: analyser-sa"]
+        end
+        RBAC["ClusterRole: pod-reader<br/>pods, pods/log, events, namespaces"]
+        SA["ServiceAccount<br/>analyser-sa"]
+        SA --> RBAC
+        AN --> SA
+        SVC1["Service: demo-app-svc"]
+        SVC2["Service: analyser-svc"]
+        DA --> SVC1
+        AN --> SVC2
+    end
+    style Compose fill:#1c2538,color:#e6edf6
+    style K8s fill:#111726,color:#e6edf6
+    style AN fill:#4a8dff,color:#fff
+    style DA fill:#3dd9b0,color:#0a0e16
+    style RBAC fill:#f0a03f,color:#0a0e16
+  </div>
+
+  <h3>Full Component Map <a class="anchor" href="#2-system-architecture">#</a></h3>
+  <p>The internal layering: API routers sit on top of the core pipeline, which depends on the LLM provider layer and the Pydantic data models. The evaluation harness reuses the same collector, preprocessor, and redactor.</p>
+  <div class="mermaid">
+flowchart TD
+    subgraph API["API Layer (FastAPI)"]
+        Main["app/main.py<br/>app + CORS + routers"]
+        RAn["analyse router<br/>/analyse/pod/*"]
+        RRep["reports router<br/>/reports/*"]
+        RSc["scenarios router<br/>/scenarios"]
+    end
+    subgraph Core["Core Pipeline (app/core)"]
+        Col["Collector<br/>kubectl subprocess"]
+        Pre["Preprocessor<br/>noise/signal filter"]
+        Red["Redactor<br/>7 PII patterns"]
+        Val["Validator<br/>ReportValidator"]
+        Prm["Prompts<br/>build_prompt()"]
+        Per["Persistence<br/>save/list/get"]
+    end
+    subgraph LLM["LLM Providers (app/core/llm)"]
+        Base["BaseLLMProvider<br/>ABC"]
+        Mock["MockProvider"]
+        OA["OpenAIProvider"]
+        An["AnthropicProvider"]
+        DS["DeepSeekProvider"]
+        Fac["get_provider()<br/>factory"]
+    end
+    subgraph Models["Data Models (app/models)"]
+        Ev["EvidenceItem"]
+        Inc["IncidentReport"]
+        Cat["FailureCategory"]
+        Sev["Severity"]
+    end
+    subgraph Eval["Evaluation (evaluation/)"]
+        Har["harness.py"]
+        Met["metrics.py"]
+        KW["KeywordClassifier"]
+        RB["RuleBasedClassifier"]
+        GT["ground_truth/*.json"]
+    end
+
+    Main --> RAn & RRep & RSc
+    RAn --> Col --> Pre --> Red
+    Red --> Fac
+    Fac --> Base
+    Base -.-> Mock & OA & An & DS
+    OA & An & DS --> Prm
+    RAn --> Per
+    RRep --> Per
+    Val --> Inc
+    Inc --> Ev & Cat & Sev
+    Har --> Col & Pre & Red & Met
+    Met --> Val & Inc
+    Har --> KW & RB & GT
+
+    style API fill:#1e3a5f,color:#fff
+    style Core fill:#1e5f3a,color:#fff
+    style LLM fill:#5f1e3a,color:#fff
+    style Models fill:#3a1e5f,color:#fff
+    style Eval fill:#5f4a1e,color:#fff
+  </div>
+</section>
+
+<!-- ============ 3. TECHNOLOGY STACK ============ -->
+<section class="doc-section" id="3-technology-stack">
+  <h2><span class="num">03</span>Technology Stack <a class="anchor" href="#3-technology-stack">#</a></h2>
+  <p class="sec-lede">Every dependency, pinned in <code>requirements.txt</code> and <code>requirements-dev.txt</code>, grouped by the layer it serves.</p>
+
+  <h3>Complete Stack Matrix <a class="anchor" href="#3-technology-stack">#</a></h3>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>Layer</th><th>Technology</th><th>Version</th><th>Role in the system</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Backend framework</strong></td><td>FastAPI</td><td><code>0.115.*</code></td><td>Async API, Pydantic-driven request/response models, automatic OpenAPI</td></tr>
+      <tr><td><strong>Runtime</strong></td><td>Python</td><td><code>&gt;=3.12</code></td><td>Language runtime; uses <code>str | None</code> union syntax, <code>default_factory</code> lambdas</td></tr>
+      <tr><td><strong>Server</strong></td><td>Uvicorn</td><td><code>0.32.*</code> (standard)</td><td>ASGI server, <code>--reload</code> in dev, single worker in container</td></tr>
+      <tr><td><strong>Validation</strong></td><td>Pydantic</td><td><code>2.10.*</code></td><td><code>IncidentReport</code> &amp; <code>EvidenceItem</code> models, <code>model_json_schema()</code>, <code>model_validate</code></td></tr>
+      <tr><td><strong>Logging</strong></td><td>structlog</td><td><code>24.*</code></td><td>Structured key/value log events (<code>analysis_started</code>, <code>analysis_complete</code>)</td></tr>
+      <tr><td><strong>HTTP client</strong></td><td>httpx</td><td><code>0.28.*</code></td><td>DeepSeek provider's async <code>POST</code> to the chat completions endpoint</td></tr>
+      <tr><td><strong>Config</strong></td><td>python-dotenv</td><td><code>1.0.*</code></td><td>Loads <code>.env</code> for API keys and provider selection</td></tr>
+      <tr><td><strong>LLM SDK &mdash; OpenAI</strong></td><td>openai</td><td><code>1.59.*</code></td><td><code>AsyncOpenAI</code>, <code>chat.completions.parse()</code> structured outputs</td></tr>
+      <tr><td><strong>LLM SDK &mdash; Anthropic</strong></td><td>anthropic</td><td><code>0.45.*</code></td><td><code>AsyncAnthropic</code>, <code>messages.parse()</code> with <code>output_format</code></td></tr>
+      <tr><td><strong>LLM &mdash; DeepSeek</strong></td><td>httpx (direct)</td><td><code>0.28.*</code></td><td>No SDK; raw <code>POST</code> with <code>response_format: json_object</code></td></tr>
+      <tr><td><strong>K8s integration</strong></td><td>kubectl subprocess</td><td><code>v1.31.0</code></td><td>Collector shells out to <code>kubectl logs/describe/get events</code>; JSONPath queries</td></tr>
+      <tr><td><strong>K8s patching</strong></td><td>strategic merge patches</td><td>&mdash;</td><td>Fault scenarios are partial Deployment/Service/ConfigMap YAML applied over the base</td></tr>
+      <tr><td><strong>Testing</strong></td><td>pytest</td><td><code>8.*</code></td><td>339 tests across 16 unit + 1 integration files</td></tr>
+      <tr><td><strong>Async tests</strong></td><td>pytest-asyncio</td><td><code>0.24.*</code></td><td><code>asyncio_mode = "auto"</code> &mdash; no <code>@pytest.mark.asyncio</code> needed</td></tr>
+      <tr><td><strong>Coverage</strong></td><td>pytest-cov</td><td><code>6.*</code></td><td><code>--cov=app --cov=evaluation</code>, CI enforces <code>--cov-fail-under=80</code></td></tr>
+      <tr><td><strong>Linting</strong></td><td>ruff</td><td><code>0.8.*</code></td><td>E, F, I, N, W rule sets; line-length 100; <code>E501</code> ignored</td></tr>
+      <tr><td><strong>Container &mdash; analyser</strong></td><td>Docker</td><td><code>python:3.12-slim</code></td><td>Installs <code>kubectl v1.31.0</code>, copies <code>app/</code>, runs uvicorn</td></tr>
+      <tr><td><strong>Container &mdash; demo</strong></td><td>Docker</td><td><code>python:3.12-slim</code></td><td>Fault-injecting FastAPI app on port 8000</td></tr>
+      <tr><td><strong>Local stack</strong></td><td>docker-compose</td><td>&mdash;</td><td>analyser + demo-app + postgres:16-alpine with healthchecks</td></tr>
+      <tr><td><strong>CI/CD</strong></td><td>GitHub Actions</td><td>&mdash;</td><td><code>ci.yml</code> (lint + test + coverage), <code>docker.yml</code> (build + publish to ghcr.io)</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout teal">
+    <span class="label">Design note</span>
+    <p>The DeepSeek provider deliberately avoids a vendor SDK and uses <code>httpx</code> directly. This keeps the dependency surface small and demonstrates that any OpenAI-compatible <code>/v1/chat/completions</code> endpoint can be integrated by injecting the JSON schema into the prompt and validating the response with <code>IncidentReport.model_validate()</code>.</p>
+  </div>
+</section>
+<!-- ============ 4. PROJECT STRUCTURE ============ -->
+<section class="doc-section" id="4-project-structure">
+  <h2><span class="num">04</span>Project Structure <a class="anchor" href="#4-project-structure">#</a></h2>
+  <p class="sec-lede">Annotated source tree of every file in the repository, with line counts and responsibilities.</p>
+
+  <pre class="tree">k8s-llm-incident-analyser/
+├── app/                              <span class="cmt"># ── analyser API + core pipeline (1,406 total source lines) ──</span>
+│   ├── __init__.py
+│   ├── main.py                       <span class="cmt"># 30 lines · FastAPI app, CORS, router registration, /health</span>
+│   ├── api/                          <span class="cmt"># ── HTTP routers ──</span>
+│   │   ├── __init__.py
+│   │   ├── analyse.py                <span class="cmt"># 44 lines · POST /analyse/pod/{ns}/{pod} — the main pipeline</span>
+│   │   ├── reports.py                <span class="cmt"># 20 lines · GET /reports, GET /reports/{incident_id}</span>
+│   │   └── scenarios.py              <span class="cmt"># 18 lines · GET /scenarios (gated by ENABLE_SCENARIOS)</span>
+│   ├── core/                         <span class="cmt"># ── pipeline stages ──</span>
+│   │   ├── __init__.py
+│   │   ├── collector.py              <span class="cmt"># 98 lines · KubernetesCollector + RawEvidence dataclass</span>
+│   │   ├── preprocessor.py           <span class="cmt"># 86 lines · LogPreprocessor + EvidencePackage, NOISE/SIGNAL</span>
+│   │   ├── redactor.py               <span class="cmt"># 32 lines · LogRedactor + 7 REDACT_PATTERNS</span>
+│   │   ├── validator.py              <span class="cmt"># 39 lines · ReportValidator wrapping Pydantic</span>
+│   │   ├── prompts.py                <span class="cmt"># 64 lines · SYSTEM_PROMPT + build_prompt() template</span>
+│   │   ├── persistence.py            <span class="cmt"># 73 lines · save_report / list_reports / get_report</span>
+│   │   └── llm/                      <span class="cmt"># ── provider layer ──</span>
+│   │       ├── __init__.py           <span class="cmt"># 28 lines · get_provider() factory (env-driven)</span>
+│   │       ├── base.py               <span class="cmt"># 10 lines · BaseLLMProvider ABC</span>
+│   │       ├── mock_provider.py      <span class="cmt"># 45 lines · heuristic classifier, no API calls</span>
+│   │       ├── openai_provider.py    <span class="cmt"># 51 lines · AsyncOpenAI + chat.completions.parse()</span>
+│   │       ├── anthropic_provider.py <span class="cmt"># 37 lines · AsyncAnthropic + messages.parse()</span>
+│   │       └── deepseek_provider.py  <span class="cmt"># 70 lines · httpx POST + json_object mode</span>
+│   └── models/                       <span class="cmt"># ── Pydantic data models ──</span>
+│       ├── __init__.py
+│       ├── evidence.py               <span class="cmt"># 10 lines · EvidenceItem (source, pod, timestamp, evidence)</span>
+│       └── incident.py               <span class="cmt"># 27 lines · IncidentReport + FailureCategory + Severity</span>
+│
+├── demo-app/                         <span class="cmt"># ── fault-injecting demo workload ──</span>
+│   ├── Dockerfile                    <span class="cmt"># 7 lines · python:3.12-slim, uvicorn</span>
+│   ├── requirements.txt              <span class="cmt"># fastapi + uvicorn only</span>
+│   └── app/
+│       ├── __init__.py
+│       └── main.py                   <span class="cmt"># 62 lines · lifespan + /health /ready /fault/* endpoints</span>
+│
+├── evaluation/                       <span class="cmt"># ── evaluation harness + baselines ──</span>
+│   ├── __init__.py
+│   ├── harness.py                    <span class="cmt"># 237 lines · EvaluationHarness + CLI + run_scenario()</span>
+│   ├── metrics.py                    <span class="cmt"># 114 lines · EvaluationResult, evaluate(), aggregate()</span>
+│   ├── baselines/
+│   │   ├── __init__.py
+│   │   ├── keyword.py                <span class="cmt"># 75 lines · KeywordClassifier — 7 categories</span>
+│   │   └── rulebased.py              <span class="cmt"># 132 lines · RuleBasedClassifier — priority rules</span>
+│   └── ground_truth/                 <span class="cmt"># 10 hand-authored ground-truth JSON files</span>
+│       ├── 01-missing-env.json       ├── 06-readiness.json
+│       ├── 02-db-unavailable.json    ├── 07-liveness.json
+│       ├── 03-crashloop.json         ├── 08-bad-configmap.json
+│       ├── 04-imagepull.json         ├── 09-app-exception.json
+│       └── 05-oom.json               └── 10-wrong-port.json
+│
+├── k8s/                              <span class="cmt"># ── Kubernetes manifests ──</span>
+│   ├── base/                         <span class="cmt"># healthy baseline (demo namespace)</span>
+│   │   ├── namespace.yaml            <span class="cmt"># 4 lines · namespace: demo</span>
+│   │   ├── configmap.yaml            <span class="cmt"># 8 lines · demo-config (APP_ENV, LOG_LEVEL)</span>
+│   │   ├── deployment.yaml           <span class="cmt"># 48 lines · demo-app + probes + resources</span>
+│   │   └── service.yaml              <span class="cmt"># 12 lines · demo-app-svc ClusterIP :80->:8000</span>
+│   ├── analyser/                     <span class="cmt"># analyser deployment</span>
+│   │   ├── configmap.yaml            <span class="cmt"># 10 lines · LLM_PROVIDER, LLM_MODEL, LLM_MAX_TOKENS</span>
+│   │   ├── rbac.yaml                 <span class="cmt"># 31 lines · SA + ClusterRole + ClusterRoleBinding</span>
+│   │   ├── deployment.yaml           <span class="cmt"># 66 lines · analyser + secret refs + probes</span>
+│   │   └── service.yaml              <span class="cmt"># 14 lines · analyser-svc ClusterIP :80->http</span>
+│   └── scenarios/                    <span class="cmt"># 10 strategic-merge fault patches</span>
+│       ├── 01-missing-env/fault.yaml     ├── 06-readiness/fault.yaml
+│       ├── 02-db-unavailable/fault.yaml  ├── 07-liveness/fault.yaml
+│       ├── 03-crashloop/fault.yaml       ├── 08-bad-configmap/fault.yaml
+│       ├── 04-imagepull/fault.yaml       ├── 09-app-exception/fault.yaml
+│       └── 05-oom/fault.yaml             └── 10-wrong-port/fault.yaml
+│
+├── tests/                            <span class="cmt"># ── 339 tests (16 unit + 1 integration) ──</span>
+│   ├── unit/                         <span class="cmt"># 330 unit tests</span>
+│   │   ├── test_api.py               <span class="cmt"># 116 lines · analyse + reports + health endpoints</span>
+│   │   ├── test_baselines_scenarios.py <span class="cmt"># 234 lines · 96 scenario tests (keyword + rulebased)</span>
+│   │   ├── test_collector.py         <span class="cmt"># 125 lines · kubectl subprocess wrapper</span>
+│   │   ├── test_demo_app.py          <span class="cmt"># 71 lines · demo app fault endpoints</span>
+│   │   ├── test_harness.py           <span class="cmt"># 256 lines · evaluation harness orchestration</span>
+│   │   ├── test_k8s_manifests.py     <span class="cmt"># 112 lines · YAML manifest validity</span>
+│   │   ├── test_keyword.py           <span class="cmt"># 108 lines · keyword baseline classifier</span>
+│   │   ├── test_llm_providers.py     <span class="cmt"># 176 lines · all 4 providers + error paths</span>
+│   │   ├── test_metrics.py           <span class="cmt"># 217 lines · evaluate/aggregate/precision/f1</span>
+│   │   ├── test_models.py            <span class="cmt"># 173 lines · Pydantic model validation</span>
+│   │   ├── test_persistence.py       <span class="cmt"># 130 lines · save/list/get report round-trip</span>
+│   │   ├── test_preprocessor.py      <span class="cmt"># 130 lines · noise/signal/context filtering</span>
+│   │   ├── test_prompts.py           <span class="cmt"># 65 lines · prompt template construction</span>
+│   │   ├── test_redactor.py          <span class="cmt"># 123 lines · all 7 redaction patterns</span>
+│   │   ├── test_rulebased.py         <span class="cmt"># 163 lines · rule-based baseline + explain()</span>
+│   │   └── test_validator.py         <span class="cmt"># 113 lines · schema validation + is_valid</span>
+│   └── integration/
+│       └── test_pipeline.py          <span class="cmt"># 268 lines · 9 end-to-end pipeline tests</span>
+│
+├── docs/                             <span class="cmt"># ── documentation ──</span>
+│   ├── architecture.md               <span class="cmt"># 156 lines · architecture overview</span>
+│   └── report_schema.json            <span class="cmt"># 131 lines · canonical IncidentReport JSON schema</span>
+│
+├── scripts/
+│   └── run_scenario.sh               <span class="cmt"># 115 lines · apply/reset fault scenarios</span>
+│
+├── .github/workflows/
+│   ├── ci.yml                        <span class="cmt"># 42 lines · lint + test + coverage gate</span>
+│   └── docker.yml                    <span class="cmt"># 70 lines · build + publish to ghcr.io</span>
+│
+├── Dockerfile                        <span class="cmt"># 26 lines · analyser image (python:3.12-slim + kubectl)</span>
+├── docker-compose.yml                <span class="cmt"># 64 lines · analyser + demo-app + postgres</span>
+├── Makefile                          <span class="cmt"># 45 lines · install/dev/test/lint/run/eval targets</span>
+├── pyproject.toml                    <span class="cmt"># 22 lines · pytest + ruff config</span>
+├── requirements.txt                  <span class="cmt"># 8 runtime deps</span>
+├── requirements-dev.txt              <span class="cmt"># 5 dev deps</span>
+├── .env.example                      <span class="cmt"># 14 lines · env var template</span>
+└── README.md                         <span class="cmt"># 197 lines · project README</span>
+  </pre>
+</section>
+
+<!-- ============ 5. BUILD & TOOLING ============ -->
+<section class="doc-section" id="5-build-tooling">
+  <h2><span class="num">05</span>Build &amp; Tooling <a class="anchor" href="#5-build-tooling">#</a></h2>
+  <p class="sec-lede">How the project is configured, built, linted, and run &mdash; from <code>pyproject.toml</code> to the Makefile to the container images.</p>
+
+  <h3>pyproject.toml <a class="anchor" href="#5-build-tooling">#</a></h3>
+  <p>A minimal PEP 621 configuration. Build backend is setuptools; pytest and ruff are configured inline so no separate config files are needed.</p>
+  <pre><code><span class="code-label">pyproject.toml</span>[build-system]
+requires = ["setuptools&gt;=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "k8s-llm-incident-analyser"
+version = "0.1.0"
+description = "LLM-Assisted Log Analysis for Incident Response in Kubernetes Environments"
+requires-python = "&gt;=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]</code></pre>
+
+  <div class="callout">
+    <span class="label">asyncio_mode = auto</span>
+    <p>Every <code>async def test_*</code> function is automatically treated as an asyncio test &mdash; no <code>@pytest.mark.asyncio</code> decorator required. This is why the 176-line <code>test_llm_providers.py</code> can call <code>await provider.analyse(...)</code> directly.</p>
+  </div>
+
+  <h3>Makefile Targets <a class="anchor" href="#5-build-tooling">#</a></h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Target</th><th>Command</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>make install</code></td><td><code>pip install -r requirements.txt</code></td><td>Runtime dependencies only</td></tr>
+      <tr><td><code>make dev</code></td><td><code>pip install -r requirements.txt -r requirements-dev.txt</code></td><td>Runtime + dev (pytest, ruff, coverage)</td></tr>
+      <tr><td><code>make test</code></td><td><code>pytest tests/unit -v</code></td><td>Run 330 unit tests verbosely</td></tr>
+      <tr><td><code>make test-cov</code></td><td><code>pytest tests/unit --cov=app --cov=evaluation --cov-report=term-missing</code></td><td>Tests + per-file coverage report</td></tr>
+      <tr><td><code>make lint</code></td><td><code>ruff check . --extend-ignore E501</code></td><td>Static analysis (E, F, I, N, W rules)</td></tr>
+      <tr><td><code>make format</code></td><td><code>ruff check --fix . &amp;&amp; ruff format .</code></td><td>Auto-fix imports + format</td></tr>
+      <tr><td><code>make clean</code></td><td><code>rm -rf .pytest_cache .ruff_cache .coverage htmlcov ...</code></td><td>Remove build artefacts and caches</td></tr>
+      <tr><td><code>make run</code></td><td><code>uvicorn app.main:app --reload --host 0.0.0.0 --port 8000</code></td><td>Start analyser API with hot reload</td></tr>
+      <tr><td><code>make run-scenario SCENARIO=05</code></td><td><code>bash scripts/run_scenario.sh 05</code></td><td>Apply a fault scenario to the demo cluster</td></tr>
+      <tr><td><code>make eval</code></td><td><code>python -m evaluation.harness</code></td><td>Run the evaluation harness (default: LLM classifier)</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Dockerfile (analyser) <a class="anchor" href="#5-build-tooling">#</a></h3>
+  <p>The analyser image bundles <code>kubectl</code> into a <code>python:3.12-slim</code> base so the collector can shell out from inside a container. <code>curl</code> is installed only to download kubectl, then purged to keep the image small.</p>
+  <pre><code><span class="code-label">Dockerfile</span>FROM python:3.12-slim
+
+ARG KUBECTL_VERSION=v1.31.0
+
+RUN apt-get update \
+    &amp;&amp; apt-get install -y --no-install-recommends curl ca-certificates \
+    &amp;&amp; curl -fsSL -o /usr/local/bin/kubectl \
+       "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+    &amp;&amp; chmod +x /usr/local/bin/kubectl \
+    &amp;&amp; apt-get purge -y curl \
+    &amp;&amp; apt-get autoremove -y \
+    &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app/ ./app/
+
+ENV LLM_PROVIDER=mock \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]</code></pre>
+
+  <h3>docker-compose.yml <a class="anchor" href="#5-build-tooling">#</a></h3>
+  <p>A three-service local stack. The analyser mounts the host kubeconfig read-only so it can reach a Minikube cluster; the demo-app depends on a healthy Postgres before starting.</p>
+  <div class="mermaid">
+flowchart TD
+    subgraph Compose["docker compose up --build"]
+        A["analyser<br/>:8000<br/>mounts ~/.kube/config:ro"]
+        D["demo-app<br/>:8001<br/>DATABASE_URL=postgres://demo:demo@db:5432/demo"]
+        DB[("db<br/>postgres:16-alpine<br/>pgdata volume")]
+        D -->|depends_on healthy| DB
+        A -.->|kubectl to host minikube| Kube["minikube"]
+    end
+    style A fill:#4a8dff,color:#fff
+    style D fill:#3dd9b0,color:#0a0e16
+    style DB fill:#a78bfa,color:#fff
+  </div>
+  <pre><code><span class="code-label">docker-compose.yml (excerpt)</span>services:
+  analyser:
+    build: { context: ., dockerfile: Dockerfile }
+    image: k8s-llm-incident-analyser:latest
+    ports: ["8000:8000"]
+    env_file: [.env]
+    environment:
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      ENABLE_SCENARIOS: ${ENABLE_SCENARIOS:-false}
+    volumes:
+      - ${HOME}/.kube/config:/root/.kube/config:ro
+      - ${HOME}/.minikube:${HOME}/.minikube:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      retries: 3
+
+  demo-app:
+    build: { context: ./demo-app }
+    ports: ["8001:8000"]
+    environment:
+      DATABASE_URL: "postgresql://demo:demo@db:5432/demo"
+    depends_on: { db: { condition: service_healthy } }
+
+  db:
+    image: postgres:16-alpine
+    environment: { POSTGRES_USER: demo, POSTGRES_PASSWORD: demo, POSTGRES_DB: demo }
+    volumes: ["pgdata:/var/lib/postgresql/data"]</code></pre>
+
+  <h3>Environment Variables <a class="anchor" href="#5-build-tooling">#</a></h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Variable</th><th>Default</th><th>Required</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>LLM_PROVIDER</code></td><td><code>mock</code></td><td><span class="pill muted">no</span></td><td>One of <code>mock</code> &middot; <code>openai</code> &middot; <code>anthropic</code> &middot; <code>deepseek</code>. Unknown values fall back to mock with a warning.</td></tr>
+      <tr><td><code>OPENAI_API_KEY</code></td><td>&mdash;</td><td><span class="pill amber">if openai</span></td><td>Read by <code>AsyncOpenAI()</code> constructor. Raises <code>KeyError</code> if unset.</td></tr>
+      <tr><td><code>ANTHROPIC_API_KEY</code></td><td>&mdash;</td><td><span class="pill amber">if anthropic</span></td><td>Read by <code>AsyncAnthropic()</code> constructor.</td></tr>
+      <tr><td><code>DEEPSEEK_API_KEY</code></td><td>&mdash;</td><td><span class="pill amber">if deepseek</span></td><td>Sent as <code>Authorization: Bearer &lt;key&gt;</code> header.</td></tr>
+      <tr><td><code>LLM_MODEL</code></td><td>provider-specific</td><td><span class="pill muted">no</span></td><td><code>gpt-4o-mini</code> (openai) &middot; <code>claude-haiku-4-5-20251001</code> (anthropic) &middot; <code>deepseek-chat</code> (deepseek)</td></tr>
+      <tr><td><code>LLM_MAX_TOKENS</code></td><td><code>2000</code></td><td><span class="pill muted">no</span></td><td>Max response tokens. Truncation raises <code>LengthFinishReasonError</code> in OpenAI provider.</td></tr>
+      <tr><td><code>ENABLE_SCENARIOS</code></td><td><code>false</code></td><td><span class="pill muted">no</span></td><td>When <code>true</code>, mounts the <code>/scenarios</code> router.</td></tr>
+      <tr><td><code>REPORTS_DIR</code></td><td><code>reports</code></td><td><span class="pill muted">no</span></td><td>Directory for persisted <code>IncidentReport</code> JSON files.</td></tr>
+      <tr><td><code>STARTUP_FAULT</code></td><td>&mdash;</td><td><span class="pill muted">no</span></td><td>Demo-app only. Set to <code>crash</code> to raise on startup (scenario 09).</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+<!-- ============ 6. APPLICATION BOOTSTRAP ============ -->
+<section class="doc-section" id="6-application-bootstrap">
+  <h2><span class="num">06</span>Application Bootstrap <a class="anchor" href="#6-application-bootstrap">#</a></h2>
+  <p class="sec-lede">How the FastAPI application is constructed, wired together, and exposed &mdash; 30 lines that anchor the whole service.</p>
+
+  <h3>App Construction (app/main.py) <a class="anchor" href="#6-application-bootstrap">#</a></h3>
+  <p>The entire application bootstrap is 30 lines. A single <code>FastAPI</code> instance is created with title, description, and version; CORS is opened for all origins; three routers are mounted under their prefixes; and a <code>/health</code> endpoint reports the configured provider.</p>
+  <pre><code><span class="code-label">app/main.py</span><span class="tok-k">import</span> os
+
+<span class="tok-k">from</span> fastapi <span class="tok-k">import</span> FastAPI
+<span class="tok-k">from</span> fastapi.middleware.cors <span class="tok-k">import</span> CORSMiddleware
+
+<span class="tok-k">from</span> app.api <span class="tok-k">import</span> analyse, reports, scenarios
+
+app = FastAPI(
+    title=<span class="tok-s">"K8s LLM Incident Analyser"</span>,
+    description=<span class="tok-s">"LLM-assisted Kubernetes incident analysis pipeline"</span>,
+    version=<span class="tok-s">"0.1.0"</span>,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[<span class="tok-s">"*"</span>],
+    allow_methods=[<span class="tok-s">"*"</span>],
+    allow_headers=[<span class="tok-s">"*"</span>],
+)
+
+app.include_router(analyse.router, prefix=<span class="tok-s">"/analyse"</span>, tags=[<span class="tok-s">"Analysis"</span>])
+app.include_router(reports.router, prefix=<span class="tok-s">"/reports"</span>, tags=[<span class="tok-s">"Reports"</span>])
+
+<span class="tok-k">if</span> os.environ.get(<span class="tok-s">"ENABLE_SCENARIOS"</span>, <span class="tok-s">"false"</span>).lower() == <span class="tok-s">"true"</span>:
+    app.include_router(scenarios.router, prefix=<span class="tok-s">"/scenarios"</span>, tags=[<span class="tok-s">"Scenarios"</span>])
+
+
+<span class="tok-d">@app.get</span>(<span class="tok-s">"/health"</span>, tags=[<span class="tok-s">"Health"</span>])
+<span class="tok-k">def</span> <span class="tok-f">health</span>():
+    <span class="tok-k">return</span> {<span class="tok-s">"status"</span>: <span class="tok-s">"ok"</span>, <span class="tok-s">"provider"</span>: os.environ.get(<span class="tok-s">"LLM_PROVIDER"</span>)}</code></pre>
+
+  <h3>Bootstrap Sequence <a class="anchor" href="#6-application-bootstrap">#</a></h3>
+  <div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant U as Uvicorn
+    participant App as app/main.py
+    participant MW as CORS Middleware
+    participant R as Routers
+    participant H as /health
+
+    U->>App: import app.main:app
+    App->>App: FastAPI(title, description, version)
+    App->>MW: add_middleware(CORSMiddleware, allow_origins=*)
+    App->>R: include_router(analyse, prefix=/analyse)
+    App->>R: include_router(reports, prefix=/reports)
+    alt ENABLE_SCENARIOS=true
+        App->>R: include_router(scenarios, prefix=/scenarios)
+    end
+    App->>H: register GET /health
+    App-->>U: app object ready
+    U->>H: GET /health (liveness)
+    H-->>U: {"status":"ok","provider":"mock"}
+  </div>
+
+  <h3>Key Decisions <a class="anchor" href="#6-application-bootstrap">#</a></h3>
+  <ul>
+    <li><strong>Wildcard CORS.</strong> <code>allow_origins=["*"]</code> keeps the prototype frictionless. In production this should be narrowed to the known UI origin.</li>
+    <li><strong>Conditional scenarios router.</strong> The <code>/scenarios</code> endpoint is off by default &mdash; it lists filesystem scenario directories, which is useful during evaluation but unnecessary in a pure analysis deployment.</li>
+    <li><strong>Stateless singletons.</strong> <code>KubernetesCollector()</code>, <code>LogPreprocessor()</code>, and <code>LogRedactor()</code> are instantiated once at module import in <code>analyse.py</code> (lines 16&ndash;18) and reused across requests. They hold no per-request state.</li>
+    <li><strong>Provider per request.</strong> <code>get_provider()</code> is called inside the request handler, not at import, so changing <code>LLM_PROVIDER</code> takes effect without a restart in some deployment patterns.</li>
+  </ul>
+</section>
+
+<!-- ============ 7. API REFERENCE ============ -->
+<section class="doc-section" id="7-api-reference">
+  <h2><span class="num">07</span>API Reference <a class="anchor" href="#7-api-reference">#</a></h2>
+  <p class="sec-lede">Five endpoints across three routers, plus the request/response shapes and the full analysis sequence.</p>
+
+  <h3>Endpoint Table <a class="anchor" href="#7-api-reference">#</a></h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Router</th><th>Response type</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill teal">GET</span></td><td><code>/health</code></td><td>&mdash; (app)</td><td><code>{status, provider}</code></td><td>Liveness check + configured provider name</td></tr>
+      <tr><td><span class="pill k8s">POST</span></td><td><code>/analyse/pod/{namespace}/{pod_name}</code></td><td>analyse</td><td><code>IncidentReport</code></td><td>Run the full collect &rarr; process &rarr; redact &rarr; LLM &rarr; save pipeline</td></tr>
+      <tr><td><span class="pill teal">GET</span></td><td><code>/reports</code></td><td>reports</td><td><code>{reports[], count}</code></td><td>List persisted report summaries</td></tr>
+      <tr><td><span class="pill teal">GET</span></td><td><code>/reports/{incident_id}</code></td><td>reports</td><td><code>IncidentReport</code></td><td>Retrieve a single report by ID (404 if not found)</td></tr>
+      <tr><td><span class="pill teal">GET</span></td><td><code>/scenarios</code></td><td>scenarios</td><td><code>{scenarios[]}</code></td><td>List available fault scenario dirs (requires <code>ENABLE_SCENARIOS=true</code>)</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>The Analysis Endpoint (app/api/analyse.py) <a class="anchor" href="#7-api-reference">#</a></h3>
+  <p>This is the heart of the system. A single <code>POST</code> triggers the entire pipeline, persists the result, and returns the structured report. A request ID (first 8 chars of a UUID) is logged at start and completion for traceability.</p>
+  <pre><code><span class="code-label">app/api/analyse.py</span><span class="tok-k">import</span> uuid
+
+<span class="tok-k">import</span> structlog
+<span class="tok-k">from</span> fastapi <span class="tok-k">import</span> APIRouter, HTTPException
+
+<span class="tok-k">from</span> app.core.collector <span class="tok-k">import</span> KubernetesCollector
+<span class="tok-k">from</span> app.core.llm <span class="tok-k">import</span> get_provider
+<span class="tok-k">from</span> app.core.persistence <span class="tok-k">import</span> save_report
+<span class="tok-k">from</span> app.core.preprocessor <span class="tok-k">import</span> LogPreprocessor
+<span class="tok-k">from</span> app.core.redactor <span class="tok-k">import</span> LogRedactor
+<span class="tok-k">from</span> app.models.incident <span class="tok-k">import</span> IncidentReport
+
+router = APIRouter()
+log = structlog.get_logger()
+
+collector = KubernetesCollector()
+preprocessor = LogPreprocessor()
+redactor = LogRedactor()
+
+
+<span class="tok-d">@router.post</span>(<span class="tok-s">"/pod/{namespace}/{pod_name}"</span>, response_model=IncidentReport)
+<span class="tok-k">async def</span> <span class="tok-f">analyse_pod</span>(namespace: <span class="tok-t">str</span>, pod_name: <span class="tok-t">str</span>) -&gt; IncidentReport:
+    request_id = <span class="tok-f">str</span>(uuid.uuid4())[:<span class="tok-n">8</span>]
+    log.info(<span class="tok-s">"analysis_started"</span>, id=request_id, ns=namespace, pod=pod_name)
+
+    <span class="tok-k">try</span>:
+        raw = collector.collect(namespace, pod_name)
+        filtered = preprocessor.process(raw)
+        safe = redactor.redact(filtered)
+        provider = get_provider()
+        report = <span class="tok-k">await</span> provider.analyse(safe)
+        <span class="tok-k">try</span>:
+            save_report(report)
+        <span class="tok-k">except</span> <span class="tok-t">Exception</span> <span class="tok-k">as</span> persist_err:
+            log.warning(<span class="tok-s">"report_persist_failed"</span>, id=request_id, error=<span class="tok-f">str</span>(persist_err))
+        log.info(<span class="tok-s">"analysis_complete"</span>, id=request_id, category=report.failure_category)
+        <span class="tok-k">return</span> report
+    <span class="tok-k">except</span> <span class="tok-t">Exception</span> <span class="tok-k">as</span> e:
+        log.error(<span class="tok-s">"analysis_failed"</span>, id=request_id, error=<span class="tok-f">str</span>(e))
+        <span class="tok-k">raise</span> HTTPException(status_code=<span class="tok-n">500</span>, detail=<span class="tok-s">f"Analysis failed: {e}"</span>)</code></pre>
+
+  <div class="callout amber">
+    <span class="label">Resilience pattern</span>
+    <p>Persistence failure is logged as a <em>warning</em>, not propagated. The report is still returned to the caller &mdash; saving to disk is a side-effect, not part of the contract. A pipeline failure, by contrast, becomes an HTTP 500 with the error detail.</p>
+  </div>
+
+  <h3>Request &amp; Response Examples <a class="anchor" href="#7-api-reference">#</a></h3>
+  <h4>Request</h4>
+  <pre><code><span class="code-label">bash</span>curl -X POST http://localhost:8000/analyse/pod/demo/demo-app</code></pre>
+
+  <h4>Response (200 OK) &mdash; IncidentReport</h4>
+  <pre><code><span class="code-label">application/json</span>{
+  "incident_id": "inc-a1b2c3d4e5f6",
+  "incident_summary": "Container terminated due to memory limit exceeded",
+  "likely_root_cause": "Container exceeded memory limit and was terminated by OOMKiller",
+  "affected_component": "demo-app",
+  "failure_category": "resource",
+  "severity": "high",
+  "confidence": 0.82,
+  "supporting_evidence": [
+    {
+      "source": "pod_status",
+      "pod": "demo-app",
+      "timestamp": null,
+      "evidence": "Last State: Terminated, Reason: OOMKilled, Exit Code: 137"
+    },
+    {
+      "source": "pod_log",
+      "pod": "demo-app",
+      "timestamp": "2026-07-20T11:04:22Z",
+      "evidence": "Memory allocation stress test starting..."
+    }
+  ],
+  "suggested_fix": "Increase the container memory limit in the deployment spec or reduce the application's memory footprint.",
+  "recommended_commands": [
+    "kubectl describe pod -n demo demo-app",
+    "kubectl top pod -n demo demo-app"
+  ],
+  "human_verification_steps": [
+    "Check the pod's memory limit vs actual usage",
+    "Review the application for memory leaks"
+  ]
+}</code></pre>
+
+  <h4>Error Response (500)</h4>
+  <pre><code><span class="code-label">application/json</span>{ "detail": "Analysis failed: kubectl timed out: logs -n demo demo-app" }</code></pre>
+
+  <h3>Analysis Sequence Diagram <a class="anchor" href="#7-api-reference">#</a></h3>
+  <div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant A as analyse_pod()
+    participant Col as Collector
+    participant Pre as Preprocessor
+    participant Red as Redactor
+    participant P as get_provider()
+    participant LLM as LLM Provider
+    participant S as save_report()
+    participant L as structlog
+
+    C->>A: POST /analyse/pod/demo/demo-app
+    A->>L: info analysis_started id=ab12cd34
+    A->>Col: collect("demo","demo-app")
+    Col-->>A: RawEvidence
+    A->>Pre: process(raw)
+    Pre-->>A: EvidencePackage
+    A->>Red: redact(filtered)
+    Red-->>A: EvidencePackage (redacted)
+    A->>P: get_provider()
+    P-->>A: provider instance
+    A->>LLM: await provider.analyse(safe)
+    LLM-->>A: IncidentReport
+    A->>S: save_report(report)
+    S-->>A: Path (or warning on failure)
+    A->>L: info analysis_complete category=resource
+    A-->>C: 200 IncidentReport JSON
+  </div>
+</section>
+<!-- ============ 8. PIPELINE ARCHITECTURE ============ -->
+<section class="doc-section" id="8-pipeline-architecture">
+  <h2><span class="num">08</span>Pipeline Architecture <a class="anchor" href="#8-pipeline-architecture">#</a></h2>
+  <p class="sec-lede">A deep dive into each of the four core pipeline stages &mdash; collector, preprocessor, redactor, and validator &mdash; with the data structures that flow between them.</p>
+
+  <div class="mermaid">
+flowchart TD
+    RE["RawEvidence<br/>dataclass"] --> EP["EvidencePackage<br/>dataclass"]
+    EP -->|"redacted"| EP2["EvidencePackage<br/>(masked)"]
+    EP2 --> IR["IncidentReport<br/>Pydantic model"]
+    RE2["collector.py<br/>98 lines"] -.-> RE
+    Pre2["preprocessor.py<br/>86 lines"] -.-> EP
+    Red2["redactor.py<br/>32 lines"] -.-> EP2
+    Val2["validator.py<br/>39 lines"] -.-> IR
+    style RE fill:#4a8dff,color:#fff
+    style EP fill:#3dd9b0,color:#0a0e16
+    style EP2 fill:#f0a03f,color:#0a0e16
+    style IR fill:#a78bfa,color:#fff
+  </div>
+
+  <h3 id="8-1-collector">8.1 Collector <span class="pill k8s">app/core/collector.py &middot; 98 lines</span> <a class="anchor" href="#8-1-collector">#</a></h3>
+  <p>The collector is a thin, synchronous wrapper around the <code>kubectl</code> binary. It shells out via <code>subprocess.run</code> with a 30-second timeout, captures stdout, and assembles everything into a <code>RawEvidence</code> dataclass. It does no filtering, no parsing beyond a JSONPath lookup &mdash; its job is to gather raw text faithfully.</p>
+
+  <h4>RawEvidence dataclass <a class="anchor" href="#8-1-collector">#</a></h4>
+  <pre><code><span class="code-label">app/core/collector.py:8-17</span><span class="tok-d">@dataclass</span>
+<span class="tok-k">class</span> <span class="tok-t">RawEvidence</span>:
+    namespace: <span class="tok-t">str</span>
+    pod_name: <span class="tok-t">str</span>
+    current_logs: <span class="tok-t">str</span> = <span class="tok-s">""</span>
+    previous_logs: <span class="tok-t">str</span> = <span class="tok-s">""</span>
+    pod_status: <span class="tok-t">str</span> = <span class="tok-s">""</span>
+    k8s_events: <span class="tok-t">str</span> = <span class="tok-s">""</span>
+    restart_count: <span class="tok-t">int</span> = <span class="tok-n">0</span>
+    container_states: <span class="tok-t">dict</span> = field(default_factory=dict)</code></pre>
+
+  <h4>Methods <a class="anchor" href="#8-1-collector">#</a></h4>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Method</th><th>kubectl invocation</th><th>Returns</th></tr></thead>
+    <tbody>
+      <tr><td><code>_run(*args)</code></td><td>internal helper &mdash; <code>subprocess.run</code> with <code>capture_output=True, text=True, timeout=30</code></td><td><code>str</code> (stdout stripped; empty on timeout/error)</td></tr>
+      <tr><td><code>get_pod_logs(ns, pod, previous=False, tail=500)</code></td><td><code>kubectl logs -n NS POD --tail=500 --timestamps=true [--previous]</code></td><td>log text</td></tr>
+      <tr><td><code>get_pod_description(ns, pod)</code></td><td><code>kubectl describe pod -n NS POD</code></td><td>full describe output</td></tr>
+      <tr><td><code>get_events(ns, field_selector="")</code></td><td><code>kubectl get events -n NS --sort-by=.metadata.creationTimestamp</code></td><td>events table text</td></tr>
+      <tr><td><code>get_restart_count(ns, pod)</code></td><td><code>kubectl get pod -n NS POD -o jsonpath={.status.containerStatuses[0].restartCount}</code></td><td><code>int</code> (0 on parse failure)</td></tr>
+      <tr><td><code>get_container_states(ns, pod)</code></td><td><code>kubectl get pod -n NS POD -o jsonpath={.status.containerStatuses}</code></td><td><code>dict</code> (parsed JSON; <code>{}</code> on failure)</td></tr>
+      <tr><td><code>collect(ns, pod_name)</code></td><td>orchestrates all of the above</td><td><code>RawEvidence</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h4>collect() sequence <a class="anchor" href="#8-1-collector">#</a></h4>
+  <div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant H as analyse_pod
+    participant C as KubernetesCollector
+    participant K as kubectl
+
+    H->>C: collect("demo", "demo-app")
+    par parallel kubectl calls
+        C->>K: logs -n demo demo-app --tail=500 --timestamps=true
+        K-->>C: current_logs
+    and
+        C->>K: logs ... --previous
+        K-->>C: previous_logs
+    and
+        C->>K: describe pod -n demo demo-app
+        K-->>C: pod_status
+    and
+        C->>K: get events -n demo --sort-by=.creationTimestamp
+        K-->>C: k8s_events
+    and
+        C->>K: get pod ... -o jsonpath=restartCount
+        K-->>C: "3"
+    and
+        C->>K: get pod ... -o jsonpath=containerStatuses
+        K-->>C: "[{...}]"
+    end
+    C-->>H: RawEvidence(namespace, pod_name, ...)
+  </div>
+
+  <div class="callout">
+    <span class="label">Defensive design</span>
+    <p>Every <code>_run()</code> call returns an empty string on non-zero exit or <code>TimeoutExpired</code> &mdash; the collector never raises. This means a missing <code>--previous</code> log (common for a pod that has never restarted) simply yields <code>previous_logs=""</code> rather than crashing the pipeline.</p>
+  </div>
+
+  <h3 id="8-2-preprocessor">8.2 Preprocessor <span class="pill teal">app/core/preprocessor.py &middot; 86 lines</span> <a class="anchor" href="#8-2-preprocessor">#</a></h3>
+  <p>The preprocessor turns raw text into signal. It classifies each log line as <strong>noise</strong> (health checks, metrics, blank lines) or <strong>signal</strong> (errors, OOM, CrashLoopBackOff, refusals), keeps a configurable context window around each signal line, deduplicates, and caps the output. The goal: send the LLM the few lines that matter, not 500 lines of probe traffic.</p>
+
+  <h4>NOISE_PATTERNS (4 patterns) <a class="anchor" href="#8-2-preprocessor">#</a></h4>
+  <pre><code><span class="code-label">app/core/preprocessor.py:6-11</span>NOISE_PATTERNS = [
+    re.compile(<span class="tok-s">r"\bGET /health\b"</span>),
+    re.compile(<span class="tok-s">r"\bGET /ready\b"</span>),
+    re.compile(<span class="tok-s">r"\bGET /metrics\b"</span>),
+    re.compile(<span class="tok-s">r"^\s*$"</span>),              <span class="tok-c"># blank lines</span>
+]</code></pre>
+
+  <h4>SIGNAL_PATTERNS (3 patterns) <a class="anchor" href="#8-2-preprocessor">#</a></h4>
+  <pre><code><span class="code-label">app/core/preprocessor.py:13-25</span>SIGNAL_PATTERNS = [
+    re.compile(<span class="tok-s">r"\b(error|exception|traceback|fatal|critical|failed|refused|timeout)\b"</span>, re.IGNORECASE),
+    re.compile(<span class="tok-s">r"\b(OOMKilled|CrashLoopBackOff|ImagePullBackOff|BackOff|Unhealthy)\b"</span>),
+    re.compile(<span class="tok-s">r"\b(missing|not found|permission denied|address already in use)\b"</span>, re.IGNORECASE),
+]</code></pre>
+
+  <h4>Context-window filtering algorithm <a class="anchor" href="#8-2-preprocessor">#</a></h4>
+  <p>The <code>_filter_with_context()</code> method (lines 50&ndash;69) implements a three-step reduction:</p>
+  <ol>
+    <li><strong>Mark.</strong> For each line, if it matches a signal pattern AND not a noise pattern, mark indices <code>[i - context_window, i + context_window + 1]</code> for keeping. Default window is 3 lines on each side.</li>
+    <li><strong>Deduplicate.</strong> Walk the kept indices in order; skip lines whose stripped content has already been seen.</li>
+    <li><strong>Cap.</strong> Return the first <code>max_log_lines</code> (default 100) joined with newlines.</li>
+  </ol>
+
+  <h4>EvidencePackage output <a class="anchor" href="#8-2-preprocessor">#</a></h4>
+  <pre><code><span class="code-label">app/core/preprocessor.py:28-36</span><span class="tok-d">@dataclass</span>
+<span class="tok-k">class</span> <span class="tok-t">EvidencePackage</span>:
+    namespace: <span class="tok-t">str</span>
+    pod_name: <span class="tok-t">str</span>
+    current_logs: <span class="tok-t">str</span>          <span class="tok-c"># filtered + deduplicated</span>
+    previous_logs: <span class="tok-t">str</span>         <span class="tok-c"># filtered + deduplicated</span>
+    pod_status_summary: <span class="tok-t">str</span>   <span class="tok-c"># truncated to 2000 chars</span>
+    k8s_events_filtered: <span class="tok-t">str</span>  <span class="tok-c"># only Warning lines + signal lines</span>
+    restart_count: <span class="tok-t">int</span></code></pre>
+
+  <div class="callout teal">
+    <span class="label">Why this matters</span>
+    <p>A pod in CrashLoopBackOff generates dozens of <code>GET /health</code> and <code>GET /ready</code> probe log lines per minute. Without filtering, those drown the single <code>RuntimeError</code> that explains the crash. The context window preserves the lines <em>around</em> the error &mdash; often a stack trace &mdash; without keeping the noise.</p>
+  </div>
+
+  <h3 id="8-3-redactor">8.3 Redactor <span class="pill amber">app/core/redactor.py &middot; 32 lines</span> <a class="anchor" href="#8-3-redactor">#</a></h3>
+  <p>The redactor runs <em>after</em> preprocessing and <em>before</em> the LLM call. It applies seven regex substitutions across every text field of the <code>EvidencePackage</code>, replacing sensitive material with categorical tags. It returns a new <code>EvidencePackage</code> (via <code>dataclasses.replace</code>) &mdash; the original is never mutated.</p>
+
+  <h4>The 7 redaction patterns <a class="anchor" href="#8-3-redactor">#</a></h4>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Pattern (regex)</th><th>Replacement tag</th><th>What it catches</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><code>(?i)(password|passwd|pwd)\s*[=:]\s*[\S]+</code></td><td><code>[PASSWORD=REDACTED]</code></td><td>Password assignments in any case</td></tr>
+      <tr><td>2</td><td><code>(?i)(api[_-]?key|apikey|token|secret)[\s=:"]+[A-Za-z0-9+/=_\-]{8,}</code></td><td><code>[API_KEY=REDACTED]</code></td><td>Generic API keys, tokens, secrets (8+ chars)</td></tr>
+      <tr><td>3</td><td><code>sk-ant-[A-Za-z0-9_\-]{20,}</code></td><td><code>[ANTHROPIC_KEY=REDACTED]</code></td><td>Anthropic API keys (specific prefix)</td></tr>
+      <tr><td>4</td><td><code>sk-[A-Za-z0-9_\-]{20,}</code></td><td><code>[OPENAI_KEY=REDACTED]</code></td><td>OpenAI API keys (specific prefix)</td></tr>
+      <tr><td>5</td><td><code>(postgres|mysql|mongodb|redis)://[^\s'"]+</code></td><td><code>[DB_URL=REDACTED]</code></td><td>Database connection URLs with credentials</td></tr>
+      <tr><td>6</td><td><code>(?i)(Authorization|Bearer)\s+[A-Za-z0-9+/=]{20,}</code></td><td><code>[AUTH_HEADER=REDACTED]</code></td><td>HTTP auth headers and bearer tokens</td></tr>
+      <tr><td>7</td><td><code>[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}</code></td><td><code>[EMAIL=REDACTED]</code></td><td>Email addresses</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <pre><code><span class="code-label">app/core/redactor.py:19-32</span><span class="tok-k">class</span> <span class="tok-t">LogRedactor</span>:
+    <span class="tok-k">def</span> <span class="tok-f">_redact_text</span>(<span class="tok-k">self</span>, text: <span class="tok-t">str</span>) -&gt; <span class="tok-t">str</span>:
+        <span class="tok-k">for</span> pattern, replacement <span class="tok-k">in</span> REDACT_PATTERNS:
+            text = pattern.sub(replacement, text)
+        <span class="tok-k">return</span> text
+
+    <span class="tok-k">def</span> <span class="tok-f">redact</span>(<span class="tok-k">self</span>, package: EvidencePackage) -&gt; EvidencePackage:
+        <span class="tok-k">return</span> replace(
+            package,
+            current_logs=<span class="tok-k">self</span>._redact_text(package.current_logs),
+            previous_logs=<span class="tok-k">self</span>._redact_text(package.previous_logs),
+            pod_status_summary=<span class="tok-k">self</span>._redact_text(package.pod_status_summary),
+            k8s_events_filtered=<span class="tok-k">self</span>._redact_text(package.k8s_events_filtered),
+        )</code></pre>
+
+  <div class="callout amber">
+    <span class="label">Order matters</span>
+    <p>The Anthropic pattern (<code>sk-ant-...</code>) is listed <em>before</em> the generic OpenAI pattern (<code>sk-...</code>). If the order were reversed, <code>sk-ant-xxx</code> would be caught by the OpenAI rule and tagged <code>[OPENAI_KEY=REDACTED]</code> &mdash; a misclassification. Specificity-first ordering is intentional.</p>
+  </div>
+
+  <h3 id="8-4-validator">8.4 Validator <span class="pill violet">app/core/validator.py &middot; 39 lines</span> <a class="anchor" href="#8-4-validator">#</a></h3>
+  <p>The validator is the safety net for any provider that returns free-form JSON (notably DeepSeek, which uses <code>json_object</code> mode rather than structured outputs). It wraps <code>IncidentReport.model_validate</code> and exposes both dict and string inputs, plus a boolean <code>is_valid</code> helper used by the evaluation harness.</p>
+
+  <pre><code><span class="code-label">app/core/validator.py</span><span class="tok-k">class</span> <span class="tok-t">ReportValidator</span>:
+    <span class="tok-s">"""Validate LLM output against the IncidentReport schema."""</span>
+
+    <span class="tok-k">def</span> <span class="tok-f">validate_dict</span>(<span class="tok-k">self</span>, data: <span class="tok-t">dict</span>) -&gt; IncidentReport:
+        <span class="tok-k">return</span> IncidentReport.model_validate(data)
+
+    <span class="tok-k">def</span> <span class="tok-f">validate_string</span>(<span class="tok-k">self</span>, raw: <span class="tok-t">str</span>) -&gt; IncidentReport:
+        <span class="tok-k">try</span>:
+            data = json.loads(raw)
+        <span class="tok-k">except</span> json.JSONDecodeError <span class="tok-k">as</span> exc:
+            <span class="tok-k">raise</span> ValueError(<span class="tok-s">f"Invalid JSON: {exc}"</span>) <span class="tok-k">from</span> exc
+        <span class="tok-k">if not</span> isinstance(data, dict):
+            <span class="tok-k">raise</span> ValueError(<span class="tok-s">"JSON must be an object, not a scalar or array"</span>)
+        <span class="tok-k">return</span> <span class="tok-k">self</span>.validate_dict(data)
+
+    <span class="tok-k">def</span> <span class="tok-f">validate</span>(<span class="tok-k">self</span>, data: <span class="tok-t">dict</span> | <span class="tok-t">str</span>) -&gt; IncidentReport:
+        <span class="tok-k">if</span> isinstance(data, <span class="tok-t">str</span>):
+            <span class="tok-k">return</span> <span class="tok-k">self</span>.validate_string(data)
+        <span class="tok-k">return</span> <span class="tok-k">self</span>.validate_dict(data)
+
+    <span class="tok-k">def</span> <span class="tok-f">get_schema</span>(<span class="tok-k">self</span>) -&gt; <span class="tok-t">dict</span>:
+        <span class="tok-k">return</span> IncidentReport.model_json_schema()
+
+    <span class="tok-k">def</span> <span class="tok-f">is_valid</span>(<span class="tok-k">self</span>, data: <span class="tok-t">dict</span> | <span class="tok-t">str</span>) -&gt; <span class="tok-t">bool</span>:
+        <span class="tok-k">try</span>:
+            <span class="tok-k">self</span>.validate(data)
+            <span class="tok-k">return</span> <span class="tok-t">True</span>
+        <span class="tok-k">except</span> (ValidationError, ValueError):
+            <span class="tok-k">return</span> <span class="tok-t">False</span></code></pre>
+
+  <p>The <code>get_schema()</code> / <code>get_schema_json()</code> methods expose the canonical JSON schema &mdash; the same one persisted in <code>docs/report_schema.json</code> and injected into the DeepSeek prompt.</p>
+</section>
+<!-- ============ 9. LLM PROVIDER LAYER ============ -->
+<section class="doc-section" id="9-llm-provider-layer">
+  <h2><span class="num">09</span>LLM Provider Layer <a class="anchor" href="#9-llm-provider-layer">#</a></h2>
+  <p class="sec-lede">A pluggable abstraction with four implementations, selected at runtime by a single environment variable.</p>
+
+  <h3>Class Hierarchy <a class="anchor" href="#9-llm-provider-layer">#</a></h3>
+  <div class="mermaid">
+classDiagram
+
+class BaseLLMProvider{
+    <<abstract>>
+    +analyse(package) IncidentReport
+}
+
+class MockProvider{
+    +analyse(package) IncidentReport
+}
+
+class OpenAIProvider{
+    -AsyncOpenAI client
+    -string model
+    +analyse(package) IncidentReport
+}
+
+class AnthropicProvider{
+    -AsyncAnthropic client
+    -string model
+    +analyse(package) IncidentReport
+}
+
+class DeepSeekProvider{
+    -string api_key
+    -string model
+    -string base_url
+    +analyse(package) IncidentReport
+}
+
+class get_provider{
+    <<factory>>
+    +get_provider() BaseLLMProvider
+}
+
+BaseLLMProvider <|-- MockProvider
+BaseLLMProvider <|-- OpenAIProvider
+BaseLLMProvider <|-- AnthropicProvider
+BaseLLMProvider <|-- DeepSeekProvider
+get_provider ..> BaseLLMProvider : returns
+  </div>
+
+  <h3>BaseLLMProvider ABC <a class="anchor" href="#9-llm-provider-layer">#</a></h3>
+  <pre><code><span class="code-label">app/core/llm/base.py &middot; 10 lines</span><span class="tok-k">from</span> abc <span class="tok-k">import</span> ABC, abstractmethod
+
+<span class="tok-k">from</span> app.core.preprocessor <span class="tok-k">import</span> EvidencePackage
+<span class="tok-k">from</span> app.models.incident <span class="tok-k">import</span> IncidentReport
+
+
+<span class="tok-k">class</span> <span class="tok-t">BaseLLMProvider</span>(ABC):
+    <span class="tok-d">@abstractmethod</span>
+    <span class="tok-k">async def</span> <span class="tok-f">analyse</span>(<span class="tok-k">self</span>, package: EvidencePackage) -&gt; IncidentReport:
+        ...</code></pre>
+
+  <h3>Provider Factory (app/core/llm/__init__.py) <a class="anchor" href="#9-llm-provider-layer">#</a></h3>
+  <p>Selection is driven entirely by <code>LLM_PROVIDER</code>. Imports are deferred (inside the function body) so that a missing <code>openai</code> package, for example, doesn't break a mock-only deployment. Unknown values log a warning and fall back to mock.</p>
+  <pre><code><span class="code-label">app/core/llm/__init__.py</span><span class="tok-k">def</span> <span class="tok-f">get_provider</span>() -&gt; BaseLLMProvider:
+    provider = os.environ.get(<span class="tok-s">"LLM_PROVIDER"</span>, <span class="tok-s">"mock"</span>).lower()
+    <span class="tok-k">if</span> provider == <span class="tok-s">"openai"</span>:
+        <span class="tok-k">from</span> app.core.llm.openai_provider <span class="tok-k">import</span> OpenAIProvider
+        <span class="tok-k">return</span> OpenAIProvider()
+    <span class="tok-k">elif</span> provider == <span class="tok-s">"anthropic"</span>:
+        <span class="tok-k">from</span> app.core.llm.anthropic_provider <span class="tok-k">import</span> AnthropicProvider
+        <span class="tok-k">return</span> AnthropicProvider()
+    <span class="tok-k">elif</span> provider == <span class="tok-s">"deepseek"</span>:
+        <span class="tok-k">from</span> app.core.llm.deepseek_provider <span class="tok-k">import</span> DeepSeekProvider
+        <span class="tok-k">return</span> DeepSeekProvider()
+    <span class="tok-k">elif</span> provider == <span class="tok-s">"mock"</span>:
+        <span class="tok-k">from</span> app.core.llm.mock_provider <span class="tok-k">import</span> MockProvider
+        <span class="tok-k">return</span> MockProvider()
+    <span class="tok-k">else</span>:
+        logger.warning(<span class="tok-s">"Unknown LLM_PROVIDER='%s' — falling back to mock"</span>, provider)
+        <span class="tok-k">from</span> app.core.llm.mock_provider <span class="tok-k">import</span> MockProvider
+        <span class="tok-k">return</span> MockProvider()</code></pre>
+
+  <h3>Provider Comparison <a class="anchor" href="#9-llm-provider-layer">#</a></h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Provider</th><th>Module</th><th>Transport</th><th>Schema enforcement</th><th>Default model</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="pill muted">MockProvider</span></td>
+        <td><code>mock_provider.py</code> (45 lines)</td>
+        <td>Heuristic keyword classifier &mdash; no network, no API key</td>
+        <td>Constructs <code>IncidentReport</code> directly</td>
+        <td>&mdash;</td>
+      </tr>
+      <tr>
+        <td><span class="pill k8s">OpenAIProvider</span></td>
+        <td><code>openai_provider.py</code> (51 lines)</td>
+        <td><code>AsyncOpenAI</code> SDK &middot; <code>client.chat.completions.parse()</code></td>
+        <td><code>response_format=IncidentReport</code> (GA Structured Outputs)</td>
+        <td><code>gpt-4o-mini</code></td>
+      </tr>
+      <tr>
+        <td><span class="pill violet">AnthropicProvider</span></td>
+        <td><code>anthropic_provider.py</code> (37 lines)</td>
+        <td><code>AsyncAnthropic</code> SDK &middot; <code>client.messages.parse()</code></td>
+        <td><code>output_format=IncidentReport</code> (Pydantic class)</td>
+        <td><code>claude-haiku-4-5-20251001</code></td>
+      </tr>
+      <tr>
+        <td><span class="pill amber">DeepSeekProvider</span></td>
+        <td><code>deepseek_provider.py</code> (70 lines)</td>
+        <td><code>httpx.AsyncClient</code> &middot; raw <code>POST</code> to <code>api.deepseek.com/v1/chat/completions</code></td>
+        <td><code>response_format: {type: "json_object"}</code> + schema in prompt + <code>model_validate()</code></td>
+        <td><code>deepseek-chat</code></td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h4>OpenAI provider &mdash; structured outputs <a class="anchor" href="#9-llm-provider-layer">#</a></h4>
+  <pre><code><span class="code-label">app/core/llm/openai_provider.py:23-51</span><span class="tok-k">async def</span> <span class="tok-f">analyse</span>(<span class="tok-k">self</span>, package: EvidencePackage) -&gt; IncidentReport:
+    system_msg, user_msg = build_prompt(package)
+    <span class="tok-k">try</span>:
+        completion = <span class="tok-k">await</span> <span class="tok-k">self</span>.client.chat.completions.parse(
+            model=<span class="tok-k">self</span>.model,
+            max_tokens=<span class="tok-f">int</span>(os.environ.get(<span class="tok-s">"LLM_MAX_TOKENS"</span>, <span class="tok-n">2000</span>)),
+            messages=[
+                {<span class="tok-s">"role"</span>: <span class="tok-s">"system"</span>, <span class="tok-s">"content"</span>: system_msg},
+                {<span class="tok-s">"role"</span>: <span class="tok-s">"user"</span>, <span class="tok-s">"content"</span>: user_msg},
+            ],
+            response_format=IncidentReport,
+        )
+    <span class="tok-k">except</span> LengthFinishReasonError <span class="tok-k">as</span> e:
+        <span class="tok-k">raise</span> RuntimeError(<span class="tok-s">f"Output truncated (increase LLM_MAX_TOKENS): {e}"</span>) <span class="tok-k">from</span> e
+    <span class="tok-k">except</span> ContentFilterFinishReasonError <span class="tok-k">as</span> e:
+        <span class="tok-k">raise</span> RuntimeError(<span class="tok-s">f"Content filtered by safety system: {e}"</span>) <span class="tok-k">from</span> e
+
+    message = completion.choices[<span class="tok-n">0</span>].message
+    <span class="tok-k">if</span> message.parsed <span class="tok-k">is</span> <span class="tok-t">None</span>:
+        <span class="tok-k">raise</span> ValueError(<span class="tok-s">f"No structured output (refusal={message.refusal!r})"</span>)
+    <span class="tok-k">return</span> message.parsed</code></pre>
+
+  <h4>DeepSeek provider &mdash; schema-in-prompt + manual validation <a class="anchor" href="#9-llm-provider-layer">#</a></h4>
+  <pre><code><span class="code-label">app/core/llm/deepseek_provider.py:32-70</span><span class="tok-k">async def</span> <span class="tok-f">analyse</span>(<span class="tok-k">self</span>, package: EvidencePackage) -&gt; IncidentReport:
+    system_msg, user_msg = build_prompt(package)
+    schema = IncidentReport.model_json_schema()
+    json_instruction = _JSON_INSTRUCTION_TEMPLATE.format(schema=json.dumps(schema, indent=<span class="tok-n">2</span>))
+
+    <span class="tok-k">async with</span> httpx.AsyncClient() <span class="tok-k">as</span> client:
+        response = <span class="tok-k">await</span> client.post(
+            <span class="tok-k">self</span>.base_url,
+            headers={<span class="tok-s">"Authorization"</span>: <span class="tok-s">f"Bearer {self.api_key}"</span>, <span class="tok-s">"Content-Type"</span>: <span class="tok-s">"application/json"</span>},
+            json={
+                <span class="tok-s">"model"</span>: <span class="tok-k">self</span>.model,
+                <span class="tok-s">"messages"</span>: [
+                    {<span class="tok-s">"role"</span>: <span class="tok-s">"system"</span>, <span class="tok-s">"content"</span>: system_msg + json_instruction},
+                    {<span class="tok-s">"role"</span>: <span class="tok-s">"user"</span>, <span class="tok-s">"content"</span>: user_msg},
+                ],
+                <span class="tok-s">"max_tokens"</span>: <span class="tok-f">int</span>(os.environ.get(<span class="tok-s">"LLM_MAX_TOKENS"</span>, <span class="tok-n">2000</span>)),
+                <span class="tok-s">"response_format"</span>: {<span class="tok-s">"type"</span>: <span class="tok-s">"json_object"</span>},
+            },
+            timeout=<span class="tok-n">60</span>,
+        )
+        response.raise_for_status()
+        raw_json = json.loads(response.json()[<span class="tok-s">"choices"</span>][<span class="tok-n">0</span>][<span class="tok-s">"message"</span>][<span class="tok-s">"content"</span>])
+        <span class="tok-k">return</span> IncidentReport.model_validate(raw_json)</code></pre>
+
+  <h3>Error Handling Patterns <a class="anchor" href="#9-llm-provider-layer">#</a></h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Provider</th><th>Failure mode</th><th>Handling</th></tr></thead>
+    <tbody>
+      <tr><td>OpenAI</td><td>Output truncated</td><td>Catches <code>LengthFinishReasonError</code> &rarr; <code>RuntimeError("Output truncated...")</code></td></tr>
+      <tr><td>OpenAI</td><td>Content filtered</td><td>Catches <code>ContentFilterFinishReasonError</code> &rarr; <code>RuntimeError("Content filtered...")</code></td></tr>
+      <tr><td>OpenAI</td><td>Model refusal</td><td><code>message.parsed is None</code> &rarr; <code>ValueError</code> with refusal reason</td></tr>
+      <tr><td>Anthropic</td><td>No parsed output</td><td><code>parsed_output is None</code> &rarr; logs raw text, raises <code>ValueError</code></td></tr>
+      <tr><td>DeepSeek</td><td>Non-JSON / truncated</td><td><code>json.JSONDecodeError</code> &rarr; <code>RuntimeError("DeepSeek returned non-JSON/truncated output")</code></td></tr>
+      <tr><td>DeepSeek</td><td>HTTP error</td><td><code>response.raise_for_status()</code> propagates <code>httpx.HTTPStatusError</code></td></tr>
+      <tr><td>DeepSeek</td><td>Schema mismatch</td><td><code>IncidentReport.model_validate()</code> raises <code>ValidationError</code></td></tr>
+      <tr><td>All</td><td>Missing API key</td><td><code>KeyError</code> at provider construction (caught by handler &rarr; HTTP 500)</td></tr>
+      <tr><td>Factory</td><td>Unknown <code>LLM_PROVIDER</code></td><td>Logs warning, falls back to <code>MockProvider</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Mock Provider Heuristic <a class="anchor" href="#9-llm-provider-layer">#</a></h3>
+  <p>The mock provider is what makes the system runnable without an API key. It concatenates <code>current_logs</code> and <code>previous_logs</code>, lowercases, and checks four substrings in priority order to pick a category. It always returns a valid <code>IncidentReport</code> with <code>confidence=0.5</code> and <code>[MOCK]</code> prefixed to <code>incident_summary</code> and <code>suggested_fix</code>, so its output is easy to distinguish from real LLM output.</p>
+  <pre><code><span class="code-label">app/core/llm/mock_provider.py:8-21</span><span class="tok-k">async def</span> <span class="tok-f">analyse</span>(<span class="tok-k">self</span>, package: EvidencePackage) -&gt; IncidentReport:
+    logs = (package.current_logs + package.previous_logs).lower()
+
+    <span class="tok-k">if</span> <span class="tok-s">"database_url"</span> <span class="tok-k">in</span> logs:
+        category, cause = <span class="tok-s">"config"</span>, <span class="tok-s">"Missing DATABASE_URL environment variable"</span>
+    <span class="tok-k">elif</span> <span class="tok-s">"connection refused"</span> <span class="tok-k">in</span> logs:
+        category, cause = <span class="tok-s">"dependency"</span>, <span class="tok-s">"Dependent service is unreachable"</span>
+    <span class="tok-k">elif</span> <span class="tok-s">"oomkilled"</span> <span class="tok-k">in</span> logs <span class="tok-k">or</span> <span class="tok-s">"memory"</span> <span class="tok-k">in</span> logs <span class="tok-k">or</span> \
+            <span class="tok-s">"memory"</span> <span class="tok-k">in</span> package.pod_status_summary.lower():
+        category, cause = <span class="tok-s">"resource"</span>, <span class="tok-s">"Container exceeded memory limit (OOMKilled)"</span>
+    <span class="tok-k">elif</span> <span class="tok-s">"imagepullbackoff"</span> <span class="tok-k">in</span> logs:
+        category, cause = <span class="tok-s">"image"</span>, <span class="tok-s">"Kubernetes cannot pull the container image"</span>
+    <span class="tok-k">else</span>:
+        category, cause = <span class="tok-s">"unknown"</span>, <span class="tok-s">"Unable to determine root cause from evidence"</span></code></pre>
+</section>
+
+<!-- ============ 10. DATA MODELS & SCHEMA ============ -->
+<section class="doc-section" id="10-data-models-schema">
+  <h2><span class="num">10</span>Data Models &amp; Schema <a class="anchor" href="#10-data-models-schema">#</a></h2>
+  <p class="sec-lede">The Pydantic models that form the contract between every LLM provider and the rest of the system &mdash; plus the canonical JSON schema they generate.</p>
+
+  <h3>Model Class Diagram <a class="anchor" href="#10-data-models-schema">#</a></h3>
+  <div class="mermaid">
+classDiagram
+
+class EvidenceItem{
+    +string source
+    +string pod
+    +string timestamp
+    +string evidence
+}
+
+class IncidentReport{
+    +string incident_id
+    +string incident_summary
+    +string likely_root_cause
+    +string affected_component
+    +FailureCategory failure_category
+    +Severity severity
+    +float confidence
+    +EvidenceItem[] supporting_evidence
+    +string suggested_fix
+    +string[] recommended_commands
+    +string[] human_verification_steps
+}
+
+class FailureCategory{
+    crash
+    config
+    dependency
+    network
+    image
+    resource
+    probe
+    unknown
+}
+
+class Severity{
+    low
+    medium
+    high
+    critical
+}
+
+class RawEvidence{
+    +string namespace
+    +string pod_name
+    +string current_logs
+    +string previous_logs
+    +string pod_status
+    +string k8s_events
+    +int restart_count
+    +object container_states
+}
+
+class EvidencePackage{
+    +string namespace
+    +string pod_name
+    +string current_logs
+    +string previous_logs
+    +string pod_status_summary
+    +string k8s_events_filtered
+    +int restart_count
+}
+
+class EvaluationResult{
+    +string scenario_id
+    +bool root_cause_correct
+    +bool category_correct
+    +bool schema_valid
+    +float latency_s
+    +float confidence
+    +int evidence_count
+    +int remediation_keywords_hit
+}
+
+IncidentReport "1" --> "*" EvidenceItem : supporting_evidence
+IncidentReport --> FailureCategory
+IncidentReport --> Severity
+EvidencePackage ..> RawEvidence : process()
+EvaluationResult ..> IncidentReport : evaluate()
+  </div>
+
+  <h3>EvidenceItem (app/models/evidence.py &middot; 10 lines) <a class="anchor" href="#10-data-models-schema">#</a></h3>
+  <pre><code><span class="code-label">app/models/evidence.py</span><span class="tok-k">from</span> typing <span class="tok-k">import</span> Literal, Optional
+<span class="tok-k">from</span> pydantic <span class="tok-k">import</span> BaseModel
+
+
+<span class="tok-k">class</span> <span class="tok-t">EvidenceItem</span>(BaseModel):
+    source: Literal[<span class="tok-s">"pod_log"</span>, <span class="tok-s">"previous_pod_log"</span>, <span class="tok-s">"kubernetes_event"</span>, <span class="tok-s">"pod_status"</span>]
+    pod: <span class="tok-t">str</span>
+    timestamp: Optional[<span class="tok-t">str</span>] = <span class="tok-t">None</span>
+    evidence: <span class="tok-t">str</span></code></pre>
+  <dl class="kv">
+    <dt>source</dt><dd>Constrained to one of four literal values &mdash; the LLM cannot invent a source type.</dd>
+    <dt>pod</dt><dd>The pod name the evidence came from.</dd>
+    <dt>timestamp</dt><dd>Optional ISO string; <code>null</code> when the source has no timestamp (e.g. <code>pod_status</code>).</dd>
+    <dt>evidence</dt><dd>The actual log line, event text, or status excerpt.</dd>
+  </dl>
+
+  <h3>IncidentReport (app/models/incident.py &middot; 27 lines) <a class="anchor" href="#10-data-models-schema">#</a></h3>
+  <pre><code><span class="code-label">app/models/incident.py</span><span class="tok-k">from</span> typing <span class="tok-k">import</span> Literal
+<span class="tok-k">from</span> uuid <span class="tok-k">import</span> uuid4
+
+<span class="tok-k">from</span> pydantic <span class="tok-k">import</span> BaseModel, Field
+
+<span class="tok-k">from</span> app.models.evidence <span class="tok-k">import</span> EvidenceItem
+
+FailureCategory = Literal[
+    <span class="tok-s">"crash"</span>, <span class="tok-s">"config"</span>, <span class="tok-s">"dependency"</span>, <span class="tok-s">"network"</span>,
+    <span class="tok-s">"image"</span>, <span class="tok-s">"resource"</span>, <span class="tok-s">"probe"</span>, <span class="tok-s">"unknown"</span>
+]
+Severity = Literal[<span class="tok-s">"low"</span>, <span class="tok-s">"medium"</span>, <span class="tok-s">"high"</span>, <span class="tok-s">"critical"</span>]
+
+
+<span class="tok-k">class</span> <span class="tok-t">IncidentReport</span>(BaseModel):
+    incident_id: <span class="tok-t">str</span> = Field(default_factory=<span class="tok-k">lambda</span>: <span class="tok-s">f"inc-{uuid4().hex[:12]}"</span>)
+    incident_summary: <span class="tok-t">str</span> = Field(..., min_length=<span class="tok-n">10</span>)
+    likely_root_cause: <span class="tok-t">str</span> = Field(..., min_length=<span class="tok-n">10</span>)
+    affected_component: <span class="tok-t">str</span>
+    failure_category: FailureCategory
+    severity: Severity
+    confidence: <span class="tok-t">float</span> = Field(..., ge=<span class="tok-n">0.0</span>, le=<span class="tok-n">1.0</span>)
+    supporting_evidence: list[EvidenceItem] = Field(..., min_length=<span class="tok-n">1</span>)
+    suggested_fix: <span class="tok-t">str</span>
+    recommended_commands: list[<span class="tok-t">str</span>]
+    human_verification_steps: list[<span class="tok-t">str</span>]
+
+    model_config = {<span class="tok-s">"extra"</span>: <span class="tok-s">"ignore"</span>}</code></pre>
+
+  <h3>Field Reference <a class="anchor" href="#10-data-models-schema">#</a></h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Constraint</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>incident_id</code></td><td><code>str</code></td><td>auto-generated</td><td><code>default_factory=lambda: f"inc-{uuid4().hex[:12]}"</code> &mdash; 12 hex chars. Not required from the LLM.</td></tr>
+      <tr><td><code>incident_summary</code></td><td><code>str</code></td><td><code>min_length=10</code></td><td>One-line human-readable summary</td></tr>
+      <tr><td><code>likely_root_cause</code></td><td><code>str</code></td><td><code>min_length=10</code></td><td>The core diagnosis</td></tr>
+      <tr><td><code>affected_component</code></td><td><code>str</code></td><td>&mdash;</td><td>Usually the pod name, but may be a Service (scenario 10)</td></tr>
+      <tr><td><code>failure_category</code></td><td><code>FailureCategory</code></td><td>enum (8 values)</td><td>See below</td></tr>
+      <tr><td><code>severity</code></td><td><code>Severity</code></td><td>enum (4 values)</td><td>See below</td></tr>
+      <tr><td><code>confidence</code></td><td><code>float</code></td><td><code>ge=0.0, le=1.0</code></td><td>LLM's self-reported confidence</td></tr>
+      <tr><td><code>supporting_evidence</code></td><td><code>list[EvidenceItem]</code></td><td><code>min_length=1</code></td><td>At least one evidence item is mandatory</td></tr>
+      <tr><td><code>suggested_fix</code></td><td><code>str</code></td><td>&mdash;</td><td>Human-verifiable remediation (no auto-remediation per system prompt)</td></tr>
+      <tr><td><code>recommended_commands</code></td><td><code>list[str]</code></td><td>&mdash;</td><td>kubectl commands to run</td></tr>
+      <tr><td><code>human_verification_steps</code></td><td><code>list[str]</code></td><td>&mdash;</td><td>Manual checks before acting</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>FailureCategory enum &mdash; 8 values <a class="anchor" href="#10-data-models-schema">#</a></h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Value</th><th>Meaning</th><th>Example scenario</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill rose">crash</span></td><td>Application crash, exception, CrashLoopBackOff</td><td>03-crashloop, 09-app-exception</td></tr>
+      <tr><td><span class="pill amber">config</span></td><td>Missing/invalid env vars, ConfigMap errors</td><td>01-missing-env, 08-bad-configmap</td></tr>
+      <tr><td><span class="pill k8s">dependency</span></td><td>External service unreachable</td><td>02-db-unavailable</td></tr>
+      <tr><td><span class="pill violet">network</span></td><td>Port mismatch, connection reset, DNS</td><td>10-wrong-port</td></tr>
+      <tr><td><span class="pill teal">image</span></td><td>ImagePullBackOff, ErrImagePull</td><td>04-imagepull</td></tr>
+      <tr><td><span class="pill amber">resource</span></td><td>OOMKilled, CPU throttling, evicted</td><td>05-oom</td></tr>
+      <tr><td><span class="pill k8s">probe</span></td><td>Readiness/liveness probe failures</td><td>06-readiness, 07-liveness</td></tr>
+      <tr><td><span class="pill muted">unknown</span></td><td>Cannot determine from evidence</td><td>&mdash;</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Severity enum &mdash; 4 values <a class="anchor" href="#10-data-models-schema">#</a></h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Value</th><th>Typical use</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill muted">low</span></td><td>Cosmetic, no user impact</td></tr>
+      <tr><td><span class="pill k8s">medium</span></td><td>Degraded but functional (e.g. readiness probe failing)</td></tr>
+      <tr><td><span class="pill amber">high</span></td><td>Service affected, restarts occurring (e.g. OOM, liveness)</td></tr>
+      <tr><td><span class="pill rose">critical</span></td><td>Pod cannot start at all (e.g. missing env, crashloop, imagepull)</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout">
+    <span class="label">model_config = {"extra": "ignore"}</span>
+    <p>Unknown fields in LLM output are silently dropped rather than raising. This is deliberate: it lets providers return extra metadata without breaking validation, while still enforcing that every <em>required</em> field is present and valid.</p>
+  </div>
+
+  <h3>Canonical JSON Schema (docs/report_schema.json) <a class="anchor" href="#10-data-models-schema">#</a></h3>
+  <p>The 131-line schema at <code>docs/report_schema.json</code> is generated from the Pydantic model via <code>IncidentReport.model_json_schema()</code>. It is the same schema injected into the DeepSeek prompt and exposed by <code>ReportValidator.get_schema()</code>. Key excerpts:</p>
+  <pre><code><span class="code-label">docs/report_schema.json (excerpt)</span>{
+  "$defs": {
+    "EvidenceItem": {
+      "properties": {
+        "source": { "enum": ["pod_log","previous_pod_log","kubernetes_event","pod_status"], "type": "string" },
+        "pod": { "type": "string" },
+        "timestamp": { "anyOf": [{"type":"string"},{"type":"null"}], "default": null },
+        "evidence": { "type": "string" }
+      },
+      "required": ["source", "pod", "evidence"]
+    }
+  },
+  "properties": {
+    "incident_summary": { "minLength": 10, "type": "string" },
+    "likely_root_cause": { "minLength": 10, "type": "string" },
+    "failure_category": { "enum": ["crash","config","dependency","network","image","resource","probe","unknown"] },
+    "severity": { "enum": ["low","medium","high","critical"] },
+    "confidence": { "maximum": 1.0, "minimum": 0.0, "type": "number" },
+    "supporting_evidence": { "items": {"$ref":"#/$defs/EvidenceItem"}, "minItems": 1, "type": "array" }
+  },
+  "required": ["incident_summary","likely_root_cause","affected_component","failure_category",
+               "severity","confidence","supporting_evidence","suggested_fix",
+               "recommended_commands","human_verification_steps"]
+}</code></pre>
+</section>
+<!-- ============ 11. DEMO APP & FAULT SCENARIOS ============ -->
+<section class="doc-section" id="11-demo-app-fault-scenarios">
+  <h2><span class="num">11</span>Demo App &amp; Fault Scenarios <a class="anchor" href="#11-demo-app-fault-scenarios">#</a></h2>
+  <p class="sec-lede">A deliberately fragile FastAPI workload plus ten strategic-merge fault patches that exercise every failure category the analyser is meant to diagnose.</p>
+
+  <h3>Demo Application (demo-app/app/main.py &middot; 62 lines) <a class="anchor" href="#11-demo-app-fault-scenarios">#</a></h3>
+  <p>A minimal FastAPI service that mimics a real workload. It uses a <code>lifespan</code> context manager to enforce a <code>DATABASE_URL</code> requirement at startup and to honour a <code>STARTUP_FAULT</code> crash trigger. Three <code>/fault/*</code> endpoints let scenarios inject failures at runtime.</p>
+
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Endpoint</th><th>Behaviour</th><th>Used by scenario</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET /health</code></td><td>Returns <code>{"status":"ok"}</code> &mdash; liveness probe target</td><td>baseline</td></tr>
+      <tr><td><code>GET /ready</code></td><td>Returns <code>{"ready":true}</code>; raises <code>RuntimeError</code> if <code>DATABASE_URL</code> contains "unavailable"</td><td>02-db-unavailable</td></tr>
+      <tr><td><code>GET /fault/crash</code></td><td>Raises <code>ZeroDivisionError("Deliberate crash for testing")</code></td><td>manual testing</td></tr>
+      <tr><td><code>GET /fault/oom</code></td><td>Allocates 600 &times; 1 MB <code>bytearray</code>s to trigger memory pressure</td><td>05-oom</td></tr>
+      <tr><td><code>GET /fault/slow</code></td><td><code>time.sleep(30)</code> &mdash; trips liveness probe timeouts</td><td>07-liveness</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h4>STARTUP_FAULT env var handling <a class="anchor" href="#11-demo-app-fault-scenarios">#</a></h4>
+  <pre><code><span class="code-label">demo-app/app/main.py:14-26</span><span class="tok-d">@asynccontextmanager</span>
+<span class="tok-k">async def</span> <span class="tok-f">lifespan</span>(app: FastAPI):
+    startup_fault = os.environ.get(<span class="tok-s">"STARTUP_FAULT"</span>, <span class="tok-s">""</span>).lower()
+    <span class="tok-k">if</span> startup_fault == <span class="tok-s">"crash"</span>:
+        logger.error(<span class="tok-s">"FATAL: STARTUP_FAULT=crash -- raising exception on startup"</span>)
+        <span class="tok-k">raise</span> RuntimeError(<span class="tok-s">"Deliberate startup crash for scenario testing"</span>)
+    db_url = os.environ.get(<span class="tok-s">"DATABASE_URL"</span>)
+    <span class="tok-k">if not</span> db_url:
+        logger.error(<span class="tok-s">"FATAL: DATABASE_URL environment variable is not set"</span>)
+        <span class="tok-k">raise</span> RuntimeError(<span class="tok-s">"Missing required configuration: DATABASE_URL"</span>)
+    logger.info(<span class="tok-s">"Demo app starting. DATABASE_URL=%s..."</span>, db_url[:<span class="tok-n">20</span>])
+    <span class="tok-k">yield</span>
+    logger.info(<span class="tok-s">"Demo app shutting down"</span>)</code></pre>
+
+  <h3>The 10 Fault Scenarios <a class="anchor" href="#11-demo-app-fault-scenarios">#</a></h3>
+  <p>Each scenario ships a <code>fault.yaml</code> strategic merge patch &mdash; a partial Kubernetes manifest that <code>kubectl apply</code> merges over the healthy baseline. The patch only needs to specify the fields that change; everything else is inherited.</p>
+
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Scenario</th><th>Category</th><th>Severity</th><th>Fault injected</th><th>Kind patched</th></tr></thead>
+    <tbody>
+      <tr><td>01</td><td><code>missing-env</code></td><td><span class="pill amber">config</span></td><td><span class="pill rose">critical</span></td><td><code>DATABASE_URL=""</code></td><td>Deployment</td></tr>
+      <tr><td>02</td><td><code>db-unavailable</code></td><td><span class="pill k8s">dependency</span></td><td><span class="pill amber">high</span></td><td><code>DATABASE_URL=postgresql://unavailable:5432/db</code></td><td>Deployment</td></tr>
+      <tr><td>03</td><td><code>crashloop</code></td><td><span class="pill rose">crash</span></td><td><span class="pill rose">critical</span></td><td><code>command: ["/bin/nonexistent"]</code></td><td>Deployment</td></tr>
+      <tr><td>04</td><td><code>imagepull</code></td><td><span class="pill teal">image</span></td><td><span class="pill rose">critical</span></td><td><code>image: demo-app:nonexistent-tag</code> + <code>imagePullPolicy: Always</code></td><td>Deployment</td></tr>
+      <tr><td>05</td><td><code>oom</code></td><td><span class="pill amber">resource</span></td><td><span class="pill amber">high</span></td><td>memory limit reduced to <code>32Mi</code></td><td>Deployment</td></tr>
+      <tr><td>06</td><td><code>readiness</code></td><td><span class="pill k8s">probe</span></td><td><span class="pill k8s">medium</span></td><td>readiness probe path &rarr; <code>/does-not-exist</code></td><td>Deployment</td></tr>
+      <tr><td>07</td><td><code>liveness</code></td><td><span class="pill k8s">probe</span></td><td><span class="pill amber">high</span></td><td>liveness probe path &rarr; <code>/fault/slow</code></td><td>Deployment</td></tr>
+      <tr><td>08</td><td><code>bad-configmap</code></td><td><span class="pill amber">config</span></td><td><span class="pill k8s">medium</span></td><td><code>LOG_LEVEL: "INVALID"</code></td><td>ConfigMap</td></tr>
+      <tr><td>09</td><td><code>app-exception</code></td><td><span class="pill rose">crash</span></td><td><span class="pill amber">high</span></td><td><code>STARTUP_FAULT=crash</code></td><td>Deployment</td></tr>
+      <tr><td>10</td><td><code>wrong-port</code></td><td><span class="pill violet">network</span></td><td><span class="pill k8s">medium</span></td><td>Service <code>targetPort: 9999</code> (pod listens on 8000)</td><td>Service</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h4>Example fault patch &mdash; 05-oom <a class="anchor" href="#11-demo-app-fault-scenarios">#</a></h4>
+  <pre><code><span class="code-label">k8s/scenarios/05-oom/fault.yaml</span>apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app
+  namespace: demo
+spec:
+  template:
+    spec:
+      containers:
+      - name: demo-app
+        resources:
+          limits:
+            memory: "32Mi"
+            cpu: "200m"
+          requests:
+            memory: "32Mi"
+            cpu: "100m"</code></pre>
+
+  <div class="callout">
+    <span class="label">Strategic merge patch</span>
+    <p>Notice the patch omits <code>image</code>, <code>ports</code>, <code>env</code>, <code>livenessProbe</code>, <code>readinessProbe</code> &mdash; Kubernetes merges only the <code>resources</code> field, leaving the rest of the baseline intact. This is what makes the scenarios surgical: each changes exactly one thing, so the resulting failure is unambiguous and the ground truth is clean.</p>
+  </div>
+
+  <h3>run_scenario.sh (scripts/run_scenario.sh &middot; 115 lines) <a class="anchor" href="#11-demo-app-fault-scenarios">#</a></h3>
+  <p>A bash orchestrator that applies the base manifests, then a chosen scenario's <code>fault.yaml</code>. It accepts a scenario number (<code>05</code>), full name (<code>05-oom</code>), <code>all</code> (run every scenario sequentially with a pause between each), or <code>reset</code> (tear down and re-apply the healthy baseline).</p>
+  <pre><code><span class="code-label">usage</span>Usage: run_scenario.sh &lt;scenario-number|scenario-name|all|reset&gt;
+
+Examples:
+  run_scenario.sh 01            # Apply scenario 01
+  run_scenario.sh 01-missing-env
+  run_scenario.sh all            # Run all scenarios sequentially
+  run_scenario.sh reset          # Tear down and re-apply base only</code></pre>
+  <p>Flow: <code>ensure_cluster</code> &rarr; <code>apply_base</code> (namespace, configmap, deployment, service) &rarr; <code>resolve_scenario</code> (number to name) &rarr; <code>apply_scenario</code> (<code>kubectl apply -f fault.yaml</code>). The script then prints the <code>curl</code> command to trigger analysis.</p>
+</section>
+
+<!-- ============ 12. EVALUATION FRAMEWORK ============ -->
+<section class="doc-section" id="12-evaluation-framework">
+  <h2><span class="num">12</span>Evaluation Framework <a class="anchor" href="#12-evaluation-framework">#</a></h2>
+  <p class="sec-lede">A reproducible harness that runs all ten fault scenarios against any classifier &mdash; LLM or baseline &mdash; and scores the results against hand-authored ground truth.</p>
+
+  <h3>Evaluation Pipeline <a class="anchor" href="#12-evaluation-framework">#</a></h3>
+  <div class="mermaid">
+flowchart LR
+    subgraph Run["run_scenario() per scenario"]
+        C["collect()"] --> P["process()"] --> R["redact()"] --> Cl["classifier()"]
+        Cl --> Ev["evaluate()"]
+    end
+    GT["ground_truth/*.json"] --> Ev
+    Ev --> ER["EvaluationResult"]
+    ER --> Agg["aggregate()"]
+    Agg --> Out["results_{classifier}.json"]
+    style Cl fill:#a78bfa,color:#fff
+    style Ev fill:#f06b8d,color:#fff
+    style GT fill:#f0a03f,color:#0a0e16
+  </div>
+
+  <h3>EvaluationResult dataclass (evaluation/metrics.py) <a class="anchor" href="#12-evaluation-framework">#</a></h3>
+  <pre><code><span class="code-label">evaluation/metrics.py:10-19</span><span class="tok-d">@dataclass</span>
+<span class="tok-k">class</span> <span class="tok-t">EvaluationResult</span>:
+    scenario_id: <span class="tok-t">str</span>
+    root_cause_correct: <span class="tok-t">bool</span>
+    category_correct: <span class="tok-t">bool</span>
+    schema_valid: <span class="tok-t">bool</span>
+    latency_s: <span class="tok-t">float</span>
+    confidence: <span class="tok-t">float</span>
+    evidence_count: <span class="tok-t">int</span>
+    remediation_keywords_hit: <span class="tok-t">int</span> = <span class="tok-n">0</span></code></pre>
+
+  <h3>Metrics Computed <a class="anchor" href="#12-evaluation-framework">#</a></h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Metric</th><th>How it's computed</th><th>Aggregate form</th></tr></thead>
+    <tbody>
+      <tr><td><strong>category_correct</strong></td><td><code>report.failure_category == gt["true_failure_category"]</code> &mdash; exact enum match</td><td><code>category_accuracy</code> (fraction correct)</td></tr>
+      <tr><td><strong>root_cause_correct</strong></td><td>Word overlap (&gt;4 chars) between <code>report.likely_root_cause</code> and <code>gt["true_root_cause"]</code> &mdash; any shared word counts as a hit</td><td><code>root_cause_accuracy</code></td></tr>
+      <tr><td><strong>schema_valid</strong></td><td><code>ReportValidator().is_valid(report.model_dump())</code></td><td><code>schema_valid_rate</code></td></tr>
+      <tr><td><strong>latency_s</strong></td><td><code>time.monotonic()</code> from collect start to classify end</td><td><code>mean_latency_s</code></td></tr>
+      <tr><td><strong>confidence</strong></td><td><code>report.confidence</code> (the LLM's self-reported score)</td><td><code>mean_confidence</code></td></tr>
+      <tr><td><strong>evidence_count</strong></td><td><code>len(report.supporting_evidence)</code></td><td><code>mean_evidence_count</code></td></tr>
+      <tr><td><strong>remediation_keywords_hit</strong></td><td>Count of <code>gt["correct_remediation_keywords"]</code> found in suggested_fix + commands + verification steps</td><td><code>mean_remediation_keywords_hit</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>The <code>aggregate()</code> function also computes <code>precision()</code>, <code>recall()</code> (equivalent when all scenarios evaluated), and <code>f1_score()</code> over any boolean attribute &mdash; useful for breaking down accuracy by category.</p>
+
+  <h3>Baseline Classifiers <a class="anchor" href="#12-evaluation-framework">#</a></h3>
+  <p>Two non-LLM baselines establish a lower bound for comparison. Both implement a <code>classify(package) -&gt; str</code> interface and return a failure category with no API calls.</p>
+
+  <h4>KeywordClassifier (evaluation/baselines/keyword.py &middot; 75 lines) <a class="anchor" href="#12-evaluation-framework">#</a></h4>
+  <p>A weighted 3-tier scoring system with disambiguation. Concatenates <code>current_logs</code>, <code>previous_logs</code>, <code>k8s_events_filtered</code>, and <code>pod_status_summary</code> into a single lowercased string, then scans for keywords. Tier 1 (definitive signals) gets weight 3, Tier 2 (strong signals) gets weight 2, Tier 3 (weak/symptom) gets weight 1. The category with the highest weighted score wins; returns <code>"unknown"</code> if no keyword matches. A disambiguation rule halves symptom-category (<code>probe</code>) scores when any root-cause category has a score &ge; 2. Covers <strong>7 categories</strong> (no <code>unknown</code> rule):</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Category</th><th>Keywords</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill rose">crash</span></td><td><strong>Tier 1 (w3):</strong> traceback, runtimeerror, executable file not found, no such file or directory, containercannotrun, starterror, zerodivision, segfault, panic &middot; <strong>Tier 2 (w2):</strong> startup_fault, unhandled exception, division by zero &middot; <strong>Tier 3 (w1):</strong> crashloopbackoff, exception</td></tr>
+      <tr><td><span class="pill amber">config</span></td><td><strong>Tier 1 (w3):</strong> missing required, environment variable, keyerror &middot; <strong>Tier 2 (w2):</strong> not set, configmap, invalid value, log_level &middot; <strong>Tier 3 (w1):</strong> configuration, invalid</td></tr>
+      <tr><td><span class="pill k8s">dependency</span></td><td><strong>Tier 1 (w3):</strong> no route to host, name resolution, dns &middot; <strong>Tier 2 (w2):</strong> connection refused, unreachable, connection timeout, timeout while connecting, database connection &middot; <strong>Tier 3 (w1):</strong> database, timeout</td></tr>
+      <tr><td><span class="pill teal">image</span></td><td><strong>Tier 1 (w3):</strong> imagepullbackoff, errimagepull, pull access denied, imagenotfound, manifest not found, failed to pull image &middot; <strong>Tier 2 (w2):</strong> back-off pulling image &middot; <strong>Tier 3 (w1):</strong> manifest, image</td></tr>
+      <tr><td><span class="pill amber">resource</span></td><td><strong>Tier 1 (w3):</strong> oomkilled, out of memory, memory limit, evicted, exit code: 137 &middot; <strong>Tier 2 (w2):</strong> memory allocation, cpu limit, throttled, cpu throttling, signal 9 &middot; <strong>Tier 3 (w1):</strong> memory</td></tr>
+      <tr><td><span class="pill k8s">probe</span></td><td><strong>Tier 1 (w3):</strong> readinessprobefailed, livenessprobefailed &middot; <strong>Tier 2 (w2):</strong> readiness probe, liveness probe, probe failed, probe timed out, http probe failed &middot; <strong>Tier 3 (w1):</strong> unhealthy, backoff</td></tr>
+      <tr><td><span class="pill violet">network</span></td><td><strong>Tier 1 (w3):</strong> port already in use, address already in use, no such host, network unreachable, no endpoints &middot; <strong>Tier 2 (w2):</strong> connection reset, targetport &middot; <strong>Tier 3 (w1):</strong> connection refused</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h4>RuleBasedClassifier (evaluation/baselines/rulebased.py &middot; 132 lines) <a class="anchor" href="#12-evaluation-framework">#</a></h4>
+  <p>More sophisticated: applies structured rules in <strong>priority order</strong>, combining text signals with <code>restart_count</code> and event text. First matching rule wins. The priority order is <code>image &rarr; resource &rarr; config &rarr; dependency &rarr; probe &rarr; crash &rarr; network</code>. An <code>explain()</code> method returns all matched signals for debugging.</p>
+  <pre><code><span class="code-label">evaluation/baselines/rulebased.py:107-113</span><span class="tok-k">def</span> <span class="tok-f">rule_classify</span>(package: EvidencePackage) -&gt; <span class="tok-t">str</span>:
+    <span class="tok-s">"""Classify an incident using structured rules. First matching rule wins."""</span>
+    text = _all_text(package)
+    <span class="tok-k">for</span> category <span class="tok-k">in</span> _PRIORITY:
+        <span class="tok-k">if</span> _RULES[category](package, text):
+            <span class="tok-k">return</span> category
+    <span class="tok-k">return</span> <span class="tok-s">"unknown"</span></code></pre>
+
+  <h3>Evaluation Harness (evaluation/harness.py &middot; 237 lines) <a class="anchor" href="#12-evaluation-framework">#</a></h3>
+  <p>The <code>EvaluationHarness</code> class orchestrates running all (or a subset of) scenarios with shared collector/preprocessor/redactor dependencies. The CLI accepts <code>--classifier</code>, <code>--scenarios</code>, <code>--namespace</code>, <code>--pod-name</code>, and <code>--output</code> arguments.</p>
+
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>CLI flag</th><th>Default</th><th>Choices / behaviour</th></tr></thead>
+    <tbody>
+      <tr><td><code>--classifier</code></td><td><code>llm</code></td><td><code>llm</code> &middot; <code>keyword</code> &middot; <code>rulebased</code></td></tr>
+      <tr><td><code>--scenarios</code></td><td>all 10</td><td>Space-separated subset, e.g. <code>--scenarios 01-missing-env 05-oom</code></td></tr>
+      <tr><td><code>--namespace</code></td><td><code>demo</code></td><td>Kubernetes namespace</td></tr>
+      <tr><td><code>--pod-name</code></td><td><code>demo-app</code></td><td>Pod name prefix</td></tr>
+      <tr><td><code>--output</code></td><td><code>evaluation/results_{classifier}.json</code></td><td>Output JSON path</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <pre><code><span class="code-label">example commands</span># Run evaluation with the LLM (requires API key)
+python -m evaluation.harness --classifier llm
+
+# Run with keyword baseline
+python -m evaluation.harness --classifier keyword
+
+# Run with rule-based baseline, specific scenarios only
+python -m evaluation.harness --classifier rulebased --scenarios 01-missing-env 05-oom</code></pre>
+
+  <h3>Ground Truth JSON Structure <a class="anchor" href="#12-evaluation-framework">#</a></h3>
+  <p>Each of the 10 ground-truth files (e.g. <code>evaluation/ground_truth/05-oom.json</code>) follows the same shape:</p>
+  <pre><code><span class="code-label">evaluation/ground_truth/05-oom.json</span>{
+  "scenario_id": "05-oom",
+  "description": "Container memory limit reduced to 32Mi causing OOMKilled when app allocates memory",
+  "true_root_cause": "Container exceeded memory limit and was terminated by OOMKiller",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "resource",
+  "true_severity": "high",
+  "expected_log_patterns": ["OOMKilled", "memory", "out of memory", "memory allocation"],
+  "expected_event_reasons": ["Killing", "BackOff"],
+  "correct_remediation_keywords": ["memory", "limit", "resources", "container", "deployment"],
+  "notes": "Pod status will show Reason: OOMKilled. Requires /fault/oom endpoint to be hit."
+}</code></pre>
+  <dl class="kv">
+    <dt>true_root_cause</dt><dd>Compared against <code>report.likely_root_cause</code> via word overlap.</dd>
+    <dt>true_failure_category</dt><dd>Compared for exact equality with <code>report.failure_category</code>.</dd>
+    <dt>correct_remediation_keywords</dt><dd>5 keywords; counted if present in the report's suggested_fix / commands / verification steps.</dd>
+    <dt>expected_log_patterns</dt><dd>Documentation of what the evidence should contain (not used by scoring directly).</dd>
+    <dt>notes</dt><dd>Human notes on subtlety or confidence level of the scenario.</dd>
+  </dl>
+</section>
+<!-- ============ 13. KUBERNETES DEPLOYMENT ============ -->
+<section class="doc-section" id="13-kubernetes-deployment">
+  <h2><span class="num">13</span>Kubernetes Deployment <a class="anchor" href="#13-kubernetes-deployment">#</a></h2>
+  <p class="sec-lede">Two manifest sets: a healthy baseline for the demo app, and an analyser deployment with least-privilege RBAC for in-cluster operation.</p>
+
+  <h3>Manifest Inventory <a class="anchor" href="#13-kubernetes-deployment">#</a></h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Set</th><th>File</th><th>Kind</th><th>Lines</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td rowspan="4"><strong>base/</strong></td><td><code>namespace.yaml</code></td><td>Namespace</td><td>4</td><td>Creates <code>demo</code> namespace</td></tr>
+      <tr><td><code>configmap.yaml</code></td><td>ConfigMap</td><td>8</td><td><code>demo-config</code>: APP_ENV, LOG_LEVEL</td></tr>
+      <tr><td><code>deployment.yaml</code></td><td>Deployment</td><td>48</td><td>demo-app + probes + resource limits</td></tr>
+      <tr><td><code>service.yaml</code></td><td>Service</td><td>12</td><td><code>demo-app-svc</code> ClusterIP :80 &rarr; :8000</td></tr>
+      <tr><td rowspan="4"><strong>analyser/</strong></td><td><code>configmap.yaml</code></td><td>ConfigMap</td><td>10</td><td><code>analyser-config</code>: LLM_PROVIDER, LLM_MODEL, LLM_MAX_TOKENS, ENABLE_SCENARIOS</td></tr>
+      <tr><td><code>rbac.yaml</code></td><td>SA + ClusterRole + Binding</td><td>31</td><td>Least-privilege pod/event reader</td></tr>
+      <tr><td><code>deployment.yaml</code></td><td>Deployment</td><td>66</td><td>analyser + secret refs + probes</td></tr>
+      <tr><td><code>service.yaml</code></td><td>Service</td><td>14</td><td><code>analyser-svc</code> ClusterIP :80 &rarr; http</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Deployment Topology <a class="anchor" href="#13-kubernetes-deployment">#</a></h3>
+  <div class="mermaid">
+flowchart TD
+    subgraph NS["namespace: demo"]
+        subgraph Demo["demo-app"]
+            DP["Pod: demo-app<br/>image: demo-app:latest<br/>imagePullPolicy: Never<br/>limits: 128Mi/200m<br/>liveness: /health<br/>readiness: /ready"]
+            DS["Service: demo-app-svc<br/>:80 -> :8000"]
+            DP --> DS
+            DCM["ConfigMap: demo-config"]
+            DCM -.-> DP
+        end
+        subgraph An["analyser"]
+            AP["Pod: analyser<br/>serviceAccount: analyser-sa<br/>image: analyser:latest<br/>limits: 512Mi/500m<br/>liveness+readiness: /health"]
+            AS["Service: analyser-svc<br/>:80 -> http"]
+            AP --> AS
+            ACM["ConfigMap: analyser-config"]
+            ACM -.-> AP
+            SEC["Secret: analyser-secrets<br/>(optional)"]
+            SEC -.-> AP
+        end
+        SA["ServiceAccount: analyser-sa"]
+        CR["ClusterRole: pod-reader<br/>pods, pods/log, events, namespaces<br/>get, list, watch"]
+        CRB["ClusterRoleBinding:<br/>analyser-pod-reader"]
+        SA --> CRB --> CR
+        AP --> SA
+    end
+    AP -.->|kubectl reads| DP
+    style An fill:#4a8dff,color:#fff
+    style Demo fill:#3dd9b0,color:#0a0e16
+    style CR fill:#f0a03f,color:#0a0e16
+  </div>
+
+  <h3>RBAC Permissions (k8s/analyser/rbac.yaml) <a class="anchor" href="#13-kubernetes-deployment">#</a></h3>
+  <p>The analyser runs under a dedicated <code>ServiceAccount</code> bound to a <code>ClusterRole</code> scoped to exactly the resources the collector needs. No write permissions, no secrets access, no namespace-wide control.</p>
+  <pre><code><span class="code-label">k8s/analyser/rbac.yaml</span>---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: analyser-sa
+  namespace: demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pod-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: analyser-pod-reader
+subjects:
+  - kind: ServiceAccount
+    name: analyser-sa
+    namespace: demo
+roleRef:
+  kind: ClusterRole
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io</code></pre>
+
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Resource</th><th>Verbs</th><th>Why the collector needs it</th></tr></thead>
+    <tbody>
+      <tr><td><code>pods</code></td><td>get, list, watch</td><td><code>kubectl describe pod</code>, <code>kubectl get pod -o jsonpath</code> (restart count, container states)</td></tr>
+      <tr><td><code>pods/log</code></td><td>get, list, watch</td><td><code>kubectl logs</code> (current + previous)</td></tr>
+      <tr><td><code>events</code></td><td>get, list, watch</td><td><code>kubectl get events -n NS</code></td></tr>
+      <tr><td><code>namespaces</code></td><td>get, list</td><td>Namespace validation (the analyser can target any namespace)</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout teal">
+    <span class="label">Least privilege</span>
+    <p>The <code>ClusterRole</code> is cluster-scoped (so the analyser can read any namespace), but it grants only <code>get/list/watch</code> on four read-only resources. There are no <code>create</code>, <code>update</code>, <code>patch</code>, or <code>delete</code> verbs &mdash; the analyser cannot modify the cluster, only observe it. The demo app's fault patches are applied by <code>run_scenario.sh</code> using the operator's kubeconfig, not by the analyser itself.</p>
+  </div>
+
+  <h3>Analyser Deployment (k8s/analyser/deployment.yaml) <a class="anchor" href="#13-kubernetes-deployment">#</a></h3>
+  <p>The analyser pod pulls its config from the <code>analyser-config</code> ConfigMap and three optional provider API keys from an <code>analyser-secrets</code> Secret. Both liveness and readiness probes hit <code>/health</code>.</p>
+  <pre><code><span class="code-label">k8s/analyser/deployment.yaml (excerpt)</span>spec:
+  template:
+    spec:
+      serviceAccountName: analyser-sa
+      containers:
+        - name: analyser
+          image: analyser:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: analyser-config
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef: { name: analyser-secrets, key: openai-api-key, optional: true }
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef: { name: analyser-secrets, key: anthropic-api-key, optional: true }
+            - name: DEEPSEEK_API_KEY
+              valueFrom:
+                secretKeyRef: { name: analyser-secrets, key: deepseek-api-key, optional: true }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits:   { cpu: 500m, memory: 512Mi }
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10</code></pre>
+
+  <h3>Quickstart: Minikube <a class="anchor" href="#13-kubernetes-deployment">#</a></h3>
+  <pre><code><span class="code-label">bash</span>minikube start
+eval $(minikube docker-env)
+docker build -t demo-app:latest ./demo-app
+docker build -t analyser:latest .
+
+kubectl apply -f k8s/base/
+kubectl apply -f k8s/analyser/
+
+# Inject a fault and analyse it
+./scripts/run_scenario.sh 05-oom
+kubectl port-forward svc/analyser-svc 8000:80
+curl -X POST http://localhost:8000/analyse/pod/demo/demo-app</code></pre>
+</section>
+
+<!-- ============ 14. DATA FLOW TRACES ============ -->
+<section class="doc-section" id="14-data-flow-traces">
+  <h2><span class="num">14</span>Data Flow Traces <a class="anchor" href="#14-data-flow-traces">#</a></h2>
+  <p class="sec-lede">Four end-to-end sequence diagrams showing how requests move through the system under realistic conditions.</p>
+
+  <h3>Trace 1: Full Analysis Request <a class="anchor" href="#14-data-flow-traces">#</a></h3>
+  <p>A client calls <code>POST /analyse/pod/demo/demo-app</code> against a pod in the OOM scenario. The request flows through every pipeline stage, the LLM returns a structured report, it is persisted to disk, and the JSON is returned to the caller.</p>
+  <div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant A as analyse_pod()
+    participant Col as Collector
+    participant K as kubectl
+    participant Pre as Preprocessor
+    participant Red as Redactor
+    participant Fac as get_provider()
+    participant LLM as OpenAIProvider
+    participant OAI as OpenAI API
+    participant S as save_report()
+    participant FS as ./reports/
+
+    C->>A: POST /analyse/pod/demo/demo-app
+    A->>A: request_id = uuid()[:8]
+    A->>Col: collect("demo","demo-app")
+    Col->>K: logs + describe + events + jsonpath
+    K-->>Col: raw text + restartCount=3
+    Col-->>A: RawEvidence
+    A->>Pre: process(raw)
+    Note over Pre: filter noise (GET /health)<br/>keep OOMKilled + context<br/>dedup + cap 100 lines
+    Pre-->>A: EvidencePackage
+    A->>Red: redact(filtered)
+    Note over Red: mask [DB_URL=REDACTED]<br/>mask [EMAIL=REDACTED]
+    Red-->>A: EvidencePackage (safe)
+    A->>Fac: get_provider()
+    Fac-->>A: OpenAIProvider
+    A->>LLM: await analyse(safe)
+    LLM->>OAI: chat.completions.parse(response_format=IncidentReport)
+    OAI-->>LLM: parsed IncidentReport
+    LLM-->>A: IncidentReport(category=resource)
+    A->>S: save_report(report)
+    S->>FS: write 1729_inc-a1b2....json
+    S-->>A: Path
+    A-->>C: 200 OK + IncidentReport JSON
+  </div>
+
+  <h3>Trace 2: Report Persistence &amp; Retrieval <a class="anchor" href="#14-data-flow-traces">#</a></h3>
+  <p>After an analysis completes, the report is written to <code>REPORTS_DIR</code> as <code>{unix_timestamp}_{incident_id}.json</code>. The <code>/reports</code> endpoints list and retrieve them. Listing reads every JSON file and returns a summary; retrieval scans for a matching <code>incident_id</code> and re-validates through the Pydantic model.</p>
+  <div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant A as analyse_pod
+    participant S as save_report
+    participant L as list_reports
+    participant G as get_report
+    participant FS as ./reports/*.json
+    participant C as Client
+
+    A->>S: save_report(report)
+    S->>FS: write 1729_inc-a1b2c3.json
+    S-->>A: Path
+
+    C->>L: GET /reports
+    L->>FS: glob("*.json") sorted
+    FS-->>L: [file1, file2, ...]
+    L->>L: parse each, extract summary fields
+    L-->>C: {reports: [{incident_id, summary, category, severity, confidence, file}], count}
+
+    C->>G: GET /reports/inc-a1b2c3
+    G->>FS: glob("*.json")
+    loop each file
+        G->>FS: read + json.loads
+        FS-->>G: data
+        G->>G: data.incident_id == "inc-a1b2c3"?
+    end
+    alt found
+        G->>G: IncidentReport.model_validate(data)
+        G-->>C: 200 IncidentReport
+    else not found
+        G-->>C: 404 "Report not found"
+    end
+  </div>
+
+  <h3>Trace 3: Evaluation Run <a class="anchor" href="#14-data-flow-traces">#</a></h3>
+  <p>The harness iterates over scenarios, reusing the same collector/preprocessor/redactor. For each scenario it collects evidence from the live pod, classifies with the chosen classifier (LLM or baseline), and scores against the ground-truth JSON. Results are aggregated and written to <code>results_{classifier}.json</code>.</p>
+  <div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant H as EvaluationHarness
+    participant Col as Collector
+    participant Pre as Preprocessor
+    participant Red as Redactor
+    participant Cl as Classifier
+    participant M as metrics.evaluate
+    participant GT as ground_truth/*.json
+    participant FS as results file
+
+    loop each scenario in SCENARIOS
+        H->>Col: collect(ns, pod)
+        Col-->>H: RawEvidence
+        H->>Pre: process(raw)
+        Pre-->>H: EvidencePackage
+        H->>Red: redact(filtered)
+        Red-->>H: EvidencePackage (safe)
+        H->>Cl: classifier(safe)
+        alt LLM classifier
+            Cl-->>H: IncidentReport
+        else baseline classifier
+            Cl-->>H: dict {failure_category, ...}
+            H->>H: _make_report_from_dict()
+        end
+        H->>GT: read {scenario_id}.json
+        GT-->>H: ground truth
+        H->>M: evaluate(report, gt_path, latency)
+        M->>M: category_correct, root_cause_correct,<br/>schema_valid, remediation_hits
+        M-->>H: EvaluationResult
+    end
+    H->>H: aggregate(results)
+    H->>FS: write results_{classifier}.json
+  </div>
+
+  <h3>Trace 4: Fault Scenario Execution <a class="anchor" href="#14-data-flow-traces">#</a></h3>
+  <p>An operator runs <code>./scripts/run_scenario.sh 05-oom</code>. The script verifies the cluster, applies the healthy baseline, then applies the OOM fault patch. The pod's memory limit drops to 32Mi; when the app's <code>/fault/oom</code> endpoint is hit (or it allocates naturally), the OOMKiller terminates it. The operator then triggers analysis.</p>
+  <div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant Op as Operator
+    participant S as run_scenario.sh
+    participant K as kubectl
+    participant Api as K8s API
+    participant Pod as demo-app Pod
+    participant A as analyser
+    participant LLM as LLM Provider
+
+    Op->>S: ./scripts/run_scenario.sh 05-oom
+    S->>K: cluster-info check
+    S->>K: apply -f k8s/base/
+    K->>Api: create namespace, configmap, deployment, service
+    Api->>Pod: schedule demo-app (healthy, 128Mi limit)
+    S->>K: apply -f k8s/scenarios/05-oom/fault.yaml
+    K->>Api: strategic merge patch (memory limit -> 32Mi)
+    Api->>Pod: rolling restart with new 32Mi limit
+    Note over Pod: app allocates memory<br/>exceeds 32Mi<br/>OOMKilled, restart
+    S-->>Op: "curl -X POST .../analyse/pod/demo/demo-app"
+    Op->>A: POST /analyse/pod/demo/demo-app
+    A->>K: logs + describe + events
+    K-->>A: OOMKilled in pod_status, restartCount high
+    A->>LLM: analyse(redacted evidence)
+    LLM-->>A: IncidentReport(category=resource, severity=high)
+    A-->>Op: structured report
+  </div>
+</section>
+<!-- ============ 15. TESTING STRATEGY ============ -->
+<section class="doc-section" id="15-testing-strategy">
+  <h2><span class="num">15</span>Testing Strategy <a class="anchor" href="#15-testing-strategy">#</a></h2>
+  <p class="sec-lede">339 tests across 16 unit files and 1 integration file, written test-first alongside every feature, with an 80% coverage gate enforced in CI.</p>
+
+  <div class="stats">
+    <div class="stat"><div class="v">339</div><div class="l">total tests</div></div>
+    <div class="stat"><div class="v">330</div><div class="l">unit tests</div></div>
+    <div class="stat"><div class="v">9</div><div class="l">integration tests</div></div>
+    <div class="stat"><div class="v">17</div><div class="l">test files</div></div>
+    <div class="stat"><div class="v">2,346</div><div class="l">lines of tests</div></div>
+    <div class="stat"><div class="v">80%</div><div class="l">CI coverage gate</div></div>
+  </div>
+
+  <h3>Test Structure <a class="anchor" href="#15-testing-strategy">#</a></h3>
+  <p>Tests are split into two directories. Unit tests mock <code>kubectl</code> (via <code>monkeypatch</code> on <code>subprocess.run</code>) and the LLM SDKs (via fakes that return canned <code>IncidentReport</code> objects), so they run in milliseconds with no cluster and no API keys. Integration tests in <code>tests/integration/test_pipeline.py</code> exercise the full collect &rarr; process &rarr; redact &rarr; classify chain end-to-end with the mock provider.</p>
+
+  <h3>Test File Catalogue <a class="anchor" href="#15-testing-strategy">#</a></h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>File</th><th>Lines</th><th>What it tests</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_api.py</code></td><td>116</td><td><code>/analyse</code>, <code>/reports</code>, <code>/health</code> endpoints via FastAPI <code>TestClient</code>; HTTP status codes, response shapes, error paths</td></tr>
+      <tr><td><code>test_baselines_scenarios.py</code></td><td>234</td><td>96 parametrized tests: all 10 scenarios &times; keyword + rulebased classification, detailed classification, harness integration</td></tr>
+      <tr><td><code>test_collector.py</code></td><td>125</td><td><code>KubernetesCollector</code> with mocked <code>subprocess.run</code>; timeout handling, non-zero exit, JSONPath parsing, <code>collect()</code> orchestration</td></tr>
+      <tr><td><code>test_demo_app.py</code></td><td>71</td><td>Demo app endpoints: <code>/health</code>, <code>/ready</code>, <code>/fault/*</code>; <code>STARTUP_FAULT</code> lifespan behaviour, missing <code>DATABASE_URL</code></td></tr>
+      <tr><td><code>test_harness.py</code></td><td>256</td><td><code>EvaluationHarness</code> orchestration, <code>run_scenario()</code>, classifier injection, <code>classify_with_baseline</code>, CLI argument handling, <code>save_results</code></td></tr>
+      <tr><td><code>test_k8s_manifests.py</code></td><td>112</td><td>Validates every YAML manifest parses, has required fields, and references resolve (labels, selectors, ports, RBAC subjects)</td></tr>
+      <tr><td><code>test_keyword.py</code></td><td>108</td><td><code>KeywordClassifier</code>: per-category keyword hits, <code>unknown</code> fallback, tie-breaking, <code>scores()</code> method</td></tr>
+      <tr><td><code>test_llm_providers.py</code></td><td>176</td><td>All 4 providers: mock heuristic, OpenAI <code>parse()</code> + truncation/refusal errors, Anthropic <code>parsed_output</code>, DeepSeek <code>httpx</code> + JSON decode errors; factory fallback</td></tr>
+      <tr><td><code>test_metrics.py</code></td><td>217</td><td><code>evaluate()</code>, <code>aggregate()</code>, <code>precision()</code>, <code>recall()</code>, <code>f1_score()</code>, root-cause word-overlap matching, remediation keyword hits</td></tr>
+      <tr><td><code>test_models.py</code></td><td>173</td><td>Pydantic validation: <code>min_length</code>, <code>ge/le</code> bounds, enum rejection, <code>extra=ignore</code>, <code>incident_id</code> auto-generation, <code>EvidenceItem</code> source literal</td></tr>
+      <tr><td><code>test_persistence.py</code></td><td>130</td><td><code>save_report</code> / <code>list_reports</code> / <code>get_report</code> round-trip with <code>tmp_path</code>; missing directory, malformed JSON, 404 path</td></tr>
+      <tr><td><code>test_preprocessor.py</code></td><td>130</td><td>Noise/signal classification, context window boundaries, deduplication, <code>max_log_lines</code> cap, event extraction, <code>pod_status_summary</code> truncation</td></tr>
+      <tr><td><code>test_prompts.py</code></td><td>65</td><td><code>build_prompt()</code> returns system + user tuple, schema injection, placeholder substitution, timestamp presence</td></tr>
+      <tr><td><code>test_redactor.py</code></td><td>123</td><td>All 7 redaction patterns individually, combined patterns, no-match passthrough, immutability of input package</td></tr>
+      <tr><td><code>test_rulebased.py</code></td><td>163</td><td>36 tests: all 7 rules, priority ordering, <code>restart_count</code> thresholds, <code>explain()</code> method, <code>unknown</code> fallback, rule interaction</td></tr>
+      <tr><td><code>test_validator.py</code></td><td>113</td><td><code>validate_dict</code> / <code>validate_string</code>, invalid JSON, non-object JSON, <code>is_valid</code> boolean, <code>get_schema</code> / <code>get_schema_json</code></td></tr>
+      <tr><td><code>tests/integration/test_pipeline.py</code></td><td>268</td><td>9 end-to-end tests: full pipeline with mock provider, persistence round-trip, error propagation, scenario-driven evidence</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>TDD Approach <a class="anchor" href="#15-testing-strategy">#</a></h3>
+  <p>The project was developed test-first. Each pipeline stage, provider, and endpoint has a dedicated test file written alongside (or before) the implementation. The pattern is consistent:</p>
+  <ol>
+    <li><strong>Write a failing test</strong> that describes the desired behaviour (e.g. "redactor masks <code>sk-...</code> as <code>[OPENAI_KEY=REDACTED]</code>").</li>
+    <li><strong>Implement the minimum</strong> to pass it (add the regex + replacement to <code>REDACT_PATTERNS</code>).</li>
+    <li><strong>Add edge-case tests</strong> (no match, partial match, ordering) and refine.</li>
+    <li><strong>Run <code>make test-cov</code></strong> and confirm the new code is covered and nothing regressed.</li>
+  </ol>
+
+  <h3>pytest-asyncio Configuration <a class="anchor" href="#15-testing-strategy">#</a></h3>
+  <p>With <code>asyncio_mode = "auto"</code> set in <code>pyproject.toml</code>, every <code>async def test_*</code> is automatically awaited &mdash; no per-test decorator. This keeps async test code as clean as synchronous test code:</p>
+  <pre><code><span class="code-label">tests/unit/test_llm_providers.py (pattern)</span><span class="tok-k">async def</span> <span class="tok-f">test_mock_provider_returns_valid_report</span>():
+    provider = MockProvider()
+    package = EvidencePackage(namespace=<span class="tok-s">"demo"</span>, pod_name=<span class="tok-s">"demo-app"</span>, ...)
+    report = <span class="tok-k">await</span> provider.analyse(package)
+    <span class="tok-k">assert</span> isinstance(report, IncidentReport)
+    <span class="tok-k">assert</span> report.failure_category <span class="tok-k">in</span> (<span class="tok-s">"config"</span>, <span class="tok-s">"dependency"</span>, <span class="tok-s">"resource"</span>, <span class="tok-s">"image"</span>, <span class="tok-s">"unknown"</span>)</code></pre>
+
+  <div class="callout">
+    <span class="label">Coverage</span>
+    <p>Measured with <code>pytest tests --cov=app --cov=evaluation</code>: <strong>641 statements, 94 missed, 85% total coverage</strong>. The app module alone reaches 88%. The lowest-covered module is <code>evaluation/harness.py</code> (59%) because its CLI <code>main()</code> path requires a live cluster; the highest are <code>mock_provider.py</code>, <code>persistence.py</code>, <code>preprocessor.py</code>, <code>prompts.py</code>, <code>redactor.py</code>, and the baselines at 100%. CI enforces <code>--cov-fail-under=80</code>.</p>
+  </div>
+</section>
+
+<!-- ============ 16. DEPLOYMENT & OPERATIONS ============ -->
+<section class="doc-section" id="16-deployment-operations">
+  <h2><span class="num">16</span>Deployment &amp; Operations <a class="anchor" href="#16-deployment-operations">#</a></h2>
+  <p class="sec-lede">Three deployment paths (local, Docker Compose, Kubernetes), the CI/CD pipelines that guard them, and the operational considerations for running the analyser in production.</p>
+
+  <h3>Deployment Paths <a class="anchor" href="#16-deployment-operations">#</a></h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Path</th><th>Command</th><th>Best for</th><th>Requires</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Local dev</strong></td><td><code>make run</code></td><td>Development, unit testing, mock provider</td><td>Python 3.12, deps installed</td></tr>
+      <tr><td><strong>Docker Compose</strong></td><td><code>docker compose up --build</code></td><td>Full local stack with demo app + Postgres</td><td>Docker</td></tr>
+      <tr><td><strong>Kubernetes</strong></td><td><code>kubectl apply -f k8s/base/ k8s/analyser/</code></td><td>In-cluster analysis, fault scenario testing</td><td>minikube/kind, kubectl</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>CI/CD Pipelines (GitHub Actions) <a class="anchor" href="#16-deployment-operations">#</a></h3>
+  <p>Two workflows in <code>.github/workflows/</code> run on every push and pull request to <code>main</code>.</p>
+
+  <h4>ci.yml &mdash; lint, test, coverage <a class="anchor" href="#16-deployment-operations">#</a></h4>
+  <div class="mermaid">
+flowchart TD
+    A["on: push/PR to main"] --> B["checkout@v4"]
+    B --> C["setup-python@v5<br/>3.12, pip cache"]
+    C --> D["pip install<br/>requirements + dev"]
+    D --> E["ruff check . --extend-ignore E501"]
+    E --> F["pytest tests/unit<br/>--cov=app --cov=evaluation<br/>--cov-fail-under=80"]
+    F --> G["pytest tests/integration<br/>LLM_PROVIDER=mock"]
+    style F fill:#4a8dff,color:#fff
+    style G fill:#3dd9b0,color:#0a0e16
+  </div>
+  <pre><code><span class="code-label">.github/workflows/ci.yml (key steps)</span>- name: Lint with ruff
+  run: ruff check . --extend-ignore E501
+
+- name: Run unit tests with coverage
+  run: pytest tests/unit --cov=app --cov=evaluation --cov-report=term-missing --cov-fail-under=80
+
+- name: Run integration tests
+  run: pytest tests/integration -v
+  env:
+    LLM_PROVIDER: mock</code></pre>
+
+  <h4>docker.yml &mdash; build &amp; publish <a class="anchor" href="#16-deployment-operations">#</a></h4>
+  <div class="mermaid">
+flowchart TD
+    A["on: push to main<br/>tags: v*.*.*<br/>PRs to main"] --> B["build-analyser job"]
+    B --> B1["setup-buildx@v3"]
+    B1 --> B2["build analyser image<br/>cache: gha"]
+    B1 --> B3["build demo-app image<br/>cache: gha"]
+    B2 & B3 --> C{push to main?}
+    C -->|yes| D["publish job"]
+    D --> D1["login to ghcr.io<br/>GITHUB_TOKEN"]
+    D1 --> D2["build + push<br/>ghcr.io/{repo}:latest"]
+    style B2 fill:#4a8dff,color:#fff
+    style B3 fill:#3dd9b0,color:#0a0e16
+    style D2 fill:#a78bfa,color:#fff
+  </div>
+  <p>The Docker workflow builds both the analyser and demo-app images with GitHub Actions cache (<code>type=gha</code>) and publishes the analyser image to the GitHub Container Registry (<code>ghcr.io</code>) on every push to <code>main</code>. Tag pushes (<code>v*.*.*</code>) also trigger builds but not publication.</p>
+
+  <h3>Environment Configuration <a class="anchor" href="#16-deployment-operations">#</a></h3>
+  <p>Configuration is entirely environment-variable driven. The <code>.env.example</code> file is the canonical template; copy it to <code>.env</code> for Docker Compose, or translate to a ConfigMap + Secret for Kubernetes.</p>
+  <pre><code><span class="code-label">.env.example</span># LLM provider selection: mock | openai | anthropic | deepseek
+LLM_PROVIDER=mock
+
+# Provider-specific API keys (required for non-mock providers)
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+DEEPSEEK_API_KEY=
+
+# LLM parameters (optional)
+LLM_MODEL=gpt-4o-mini
+LLM_MAX_TOKENS=2000
+
+# Feature flags
+ENABLE_SCENARIOS=false</code></pre>
+
+  <h3>Monitoring Considerations <a class="anchor" href="#16-deployment-operations">#</a></h3>
+  <ul>
+    <li><strong>Health endpoint.</strong> <code>GET /health</code> returns <code>{"status":"ok","provider":"..."}</code> &mdash; suitable for Kubernetes liveness/readiness probes (both wired to <code>/health</code> in <code>k8s/analyser/deployment.yaml</code>).</li>
+    <li><strong>Structured logs.</strong> <code>structlog</code> emits key/value events (<code>analysis_started</code>, <code>analysis_complete</code>, <code>analysis_failed</code>, <code>report_persist_failed</code>) with a request ID &mdash; parseable by any log aggregator (Loki, Elasticsearch, Datadog).</li>
+    <li><strong>Persistence visibility.</strong> Every report is written to <code>REPORTS_DIR</code> as a timestamped JSON file. A sidecar or cron job could ship these to object storage for long-term audit.</li>
+    <li><strong>LLM cost &amp; latency.</strong> The evaluation harness records <code>latency_s</code> per scenario. In production, wrapping <code>provider.analyse()</code> with a metrics emitter (Prometheus histogram) would surface P50/P95 latency and token spend.</li>
+    <li><strong>Failure isolation.</strong> The <code>analyse_pod</code> handler catches all exceptions and returns HTTP 500 with the error detail. Persistence failures are downgraded to warnings so a full disk never blocks an analysis response.</li>
+    <li><strong>Resource limits.</strong> The analyser container is capped at <code>500m</code> CPU / <code>512Mi</code> memory &mdash; enough for a single concurrent analysis. Horizontal scaling would require a shared <code>REPORTS_DIR</code> (e.g. a PVC or S3-backed persistence layer).</li>
+  </ul>
+
+  <h3>Operational Checklist <a class="anchor" href="#16-deployment-operations">#</a></h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Concern</th><th>Dev / mock</th><th>Production</th></tr></thead>
+    <tbody>
+      <tr><td>LLM provider</td><td><code>mock</code> (no key)</td><td><code>openai</code> / <code>anthropic</code> / <code>deepseek</code> with key in Secret</td></tr>
+      <tr><td>CORS</td><td>Wildcard <code>*</code></td><td>Narrow to known UI origin</td></tr>
+      <tr><td>Scenarios endpoint</td><td><code>ENABLE_SCENARIOS=true</code></td><td><code>false</code> (disable in production)</td></tr>
+      <tr><td>Report storage</td><td>local <code>./reports</code></td><td>mounted PVC or object storage</td></tr>
+      <tr><td>RBAC</td><td>cluster-admin (convenience)</td><td><code>pod-reader</code> ClusterRole (read-only)</td></tr>
+      <tr><td>API keys</td><td><code>.env</code> file</td><td>Kubernetes Secret with <code>optional: true</code> per provider</td></tr>
+      <tr><td>Replicas</td><td>1</td><td>2+ with shared storage for <code>REPORTS_DIR</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout teal">
+    <span class="label">Research prototype note</span>
+    <p>This system is a PhD dissertation prototype demonstrating that LLM-assisted log analysis is feasible, schema-safe, and benchmarkable. The architecture is deliberately small (1,406 source lines) so that every component is auditable. Hardening for production would focus on: narrowing CORS, adding authentication, replacing file-based persistence with a database, adding Prometheus metrics, and load-testing the LLM provider path under concurrent requests.</p>
+  </div>
+
+  <hr class="sep">
+  <p style="text-align:center; color:var(--text-faint); font-family:var(--font-mono); font-size:12px; margin-top:40px;">
+    K8s LLM Incident Analyser &middot; v0.1.0 &middot; LLM-Assisted Log Analysis for Incident Response in Kubernetes Environments<br>
+    Generated technical documentation &middot; 1,406 source lines &middot; 339 tests &middot; 4 LLM providers &middot; 10 fault scenarios
+  </p>
+</section>
+</div>
+</div>
+
+<script>
+(function(){
+  var dark = true;
+  try { dark = localStorage.getItem('klia-theme') !== 'light'; } catch(e){}
+  if(!dark) document.body.classList.add('light');
+  if(window.mermaid){
+    var mels = document.querySelectorAll('.mermaid');
+    mels.forEach(function(el){ el.setAttribute('data-original', el.innerHTML); });
+    mermaid.initialize({startOnLoad:true, theme: dark ? 'dark' : 'default', securityLevel:'loose', flowchart:{useMaxWidth:true,htmlLabels:true}, sequence:{useMaxWidth:true,actorMargin:50,boxTextMargin:5,noteMargin:8,messageMargin:35,mirrorActors:false}});
+  }
+  document.addEventListener('DOMContentLoaded', function(){
+    var tt = document.createElement('button');
+    tt.className = 'theme-toggle'; tt.title = 'Toggle theme';
+    tt.innerHTML = dark ? '\u263C' : '\u263D';
+    document.body.appendChild(tt);
+    tt.addEventListener('click', function(){
+      dark = !dark;
+      document.body.classList.toggle('light', !dark);
+      tt.innerHTML = dark ? '\u263C' : '\u263D';
+      try { localStorage.setItem('klia-theme', dark ? 'dark' : 'light'); } catch(e){}
+      if(window.mermaid){
+        mermaid.initialize({startOnLoad:false, theme: dark ? 'dark' : 'default', securityLevel:'loose', flowchart:{useMaxWidth:true,htmlLabels:true}, sequence:{useMaxWidth:true,actorMargin:50,boxTextMargin:5,noteMargin:8,messageMargin:35,mirrorActors:false}});
+        var els = document.querySelectorAll('.mermaid');
+        els.forEach(function(el){
+          el.removeAttribute('data-processed');
+          var src = el.getAttribute('data-original');
+          if(src){ el.innerHTML = src; }
+        });
+        try { mermaid.run({nodes: Array.from(els)}); } catch(e){ try { mermaid.run(); } catch(e2){} }
+      }
+    });
+    var tb = document.createElement('button');
+    tb.className = 'to-top'; tb.title = 'Back to top'; tb.innerHTML = '\u2191';
+    document.body.appendChild(tb);
+    tb.addEventListener('click', function(){ window.scrollTo({top:0,behavior:'smooth'}); });
+    window.addEventListener('scroll', function(){ tb.classList.toggle('show', window.scrollY > 600); });
+
+    var sb = document.getElementById('sidebar');
+    var bd = document.getElementById('backdrop');
+    var mb = document.getElementById('menu-btn');
+    function openS(){ sb.classList.add('open'); bd.classList.add('show'); }
+    function closeS(){ sb.classList.remove('open'); bd.classList.remove('show'); }
+    if(mb) mb.addEventListener('click', function(){ sb.classList.contains('open') ? closeS() : openS(); });
+    bd.addEventListener('click', closeS);
+    var links = document.querySelectorAll('.toc a');
+    links.forEach(function(l){ l.addEventListener('click', function(){ if(window.innerWidth <= 1024) closeS(); }); });
+
+    var sections = document.querySelectorAll('section.doc-section');
+    var navMap = {};
+    links.forEach(function(l){ navMap[l.getAttribute('href').slice(1)] = l; });
+    var obs = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){
+        if(en.isIntersecting){
+          links.forEach(function(l){ l.classList.remove('active'); });
+          var id = en.target.id;
+          if(navMap[id]) navMap[id].classList.add('active');
+        }
+      });
+    }, {rootMargin:'-20% 0px -70% 0px'});
+    sections.forEach(function(s){ obs.observe(s); });
+  });
+})();
+</script>
+</body>
+</html>

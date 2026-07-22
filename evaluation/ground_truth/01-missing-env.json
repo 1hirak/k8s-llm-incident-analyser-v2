@@ -1,0 +1,22 @@
+{
+  "scenario_id": "01-missing-env",
+  "description": "DATABASE_URL environment variable set to empty string in deployment",
+  "true_root_cause": "Missing required environment variable DATABASE_URL",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "config",
+  "true_severity": "critical",
+  "expected_log_patterns": [
+    "Missing required configuration",
+    "DATABASE_URL",
+    "RuntimeError"
+  ],
+  "expected_event_reasons": ["BackOff", "Failed"],
+  "correct_remediation_keywords": [
+    "DATABASE_URL",
+    "environment variable",
+    "ConfigMap",
+    "Secret",
+    "deployment"
+  ],
+  "notes": "Confident diagnosis expected. Evidence is unambiguous - the env var is empty."
+}

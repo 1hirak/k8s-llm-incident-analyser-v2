@@ -23,7 +23,15 @@ env/
 Thumbs.db
 
 # Evaluation results
-evaluation/results/*.json
+evaluation/results*.json
+
+# Reports service local SQLite data
+data/
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
 
 # Docker
 *.log
