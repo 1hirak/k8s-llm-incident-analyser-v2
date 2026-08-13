@@ -3,7 +3,7 @@
 # End-to-end smoke test for the K8s LLM Incident Analyser platform.
 #
 # Prerequisites:
-#   - Platform stack running:  docker compose up --build -d
+#   - Platform stack running:  make up
 #   - A Kubernetes cluster reachable by collector/scenario (minikube/k3s)
 #   - Demo app deployed:       kubectl apply -f k8s/base/
 #
