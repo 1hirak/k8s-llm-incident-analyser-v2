@@ -1,0 +1,13 @@
+{
+  "scenario_id": "21-cpu-throttling",
+  "name": "CPU Throttling",
+  "description": "Container CPU limit reduced to 1m, causing severe throttling and slow probes",
+  "true_root_cause": "The container CPU limit is too low for reliable application and probe execution",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "resource",
+  "true_severity": "medium",
+  "expected_log_patterns": ["timeout", "probe", "throttl"],
+  "expected_event_reasons": ["Unhealthy"],
+  "correct_remediation_keywords": ["cpu", "limit", "resources", "probe"],
+  "notes": "This scenario demonstrates resource starvation without changing application code."
+}

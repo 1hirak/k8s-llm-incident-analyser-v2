@@ -37,6 +37,23 @@ class TestHealth:
         assert resp.status_code == 200
         assert resp.json()["cluster"] == "unreachable"
 
+
+class TestStatus:
+    def test_status_reports_connection_and_permissions(self):
+        results = [_mock_result("server version")]
+        results.extend(_mock_result("yes") for _ in range(3))
+        with patch("subprocess.run", side_effect=results):
+            resp = client.get("/status?namespace=production")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["cluster"] == "connected"
+        assert data["namespace"] == "production"
+        assert data["permissions"] == {
+            "get_pods": True,
+            "get_pod_logs": True,
+            "get_events": True,
+        }
+
     def test_health_includes_all_standard_fields(self):
         resp = client.get("/health")
         data = resp.json()

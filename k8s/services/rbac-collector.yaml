@@ -8,7 +8,7 @@
 # Security boundary:
 #   - NO write permissions (cannot create, update, patch, or delete anything)
 #   - NO access to secrets, configmaps, or other sensitive resources
-#   - ClusterRole (not Role) so it can inspect pods in any namespace,
+#   - ClusterRole (not Role) so it can inspect targets in any namespace,
 #     not just "analyser" — the target demo-app runs in "demo" namespace.
 #
 # This is consumed by:
@@ -32,9 +32,19 @@ metadata:
     app.kubernetes.io/name: collector-svc
     app.kubernetes.io/component: platform
 rules:
-  # Core resources: pods, pod logs, events, namespaces
+  # Core resources: pods, logs, events, namespaces, services, and nodes
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "events", "namespaces"]
+    resources: ["pods", "pods/log", "events", "namespaces", "services", "nodes"]
+    verbs: ["get", "list", "watch"]
+  # Workload resources resolved to their owned pods.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
     verbs: ["get", "list", "watch"]
   # No write verbs (create, update, patch, delete) — read-only boundary
 ---

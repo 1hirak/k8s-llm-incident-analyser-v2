@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ApiError, API_BASE_URL, getHealth, createJob, getJob, listJobs, listReports, getReport, getStats, listScenarios, applyScenario, resetScenarios } from "@/lib/api";
+import { ApiError, API_BASE_URL, cancelActiveJobs, cancelJob, getHealth, createJob, getJob, listJobs, listReports, getReport, getStats, listScenarios, applyScenario, resetScenarios, getSettings, saveSettings, listProviders } from "@/lib/api";
 
 const mockFetch = (status: number, body: unknown, ok = status >= 200 && status < 300) => {
   return vi.fn().mockResolvedValue({ ok, status, json: async () => body } as Response);
@@ -9,12 +9,12 @@ beforeEach(() => { vi.restoreAllMocks(); });
 
 describe("ApiError", () => {
   it("creates with status and problem", () => {
-    const err = new ApiError(404, { status: 404, title: "Not found", detail: "missing" });
+    const err = new ApiError(404, { type: "https://errors.k8s-llm.io/not-found", status: 404, title: "Not found", detail: "missing" });
     expect(err.status).toBe(404);
     expect(err.message).toBe("missing");
   });
   it("falls back to title when no detail", () => {
-    const err = new ApiError(500, { status: 500, title: "Server error" });
+    const err = new ApiError(500, { type: "https://errors.k8s-llm.io/internal", status: 500, title: "Server error" } as never);
     expect(err.message).toBe("Server error");
   });
   it("generic message when no problem", () => {
@@ -22,7 +22,7 @@ describe("ApiError", () => {
     expect(err.message).toBe("Request failed with status 502");
   });
   it("accepts explicit message override", () => {
-    const err = new ApiError(500, { status: 500, title: "Server error" }, "Custom");
+    const err = new ApiError(500, { type: "https://errors.k8s-llm.io/internal", status: 500, title: "Server error", detail: "An unexpected error occurred" }, "Custom");
     expect(err.message).toBe("Custom");
   });
   it("instanceof Error", () => {
@@ -50,7 +50,7 @@ describe("getHealth", () => {
     expect(data.status).toBe("ok");
   });
   it("throws ApiError on 500", async () => {
-    vi.stubGlobal("fetch", mockFetch(500, { status: 500, title: "err" }, false));
+    vi.stubGlobal("fetch", mockFetch(500, { type: "https://errors.k8s-llm.io/internal", status: 500, title: "Internal server error", detail: "An unexpected error occurred" }, false));
     await expect(getHealth()).rejects.toBeInstanceOf(ApiError);
   });
 });
@@ -68,6 +68,20 @@ describe("getJob", () => {
     vi.stubGlobal("fetch", mockFetch(200, { job_id: "j1", namespace: "n", pod_name: "p", status: "done", created_at: "t", updated_at: "t" }));
     const data = await getJob("j1");
     expect(data.status).toBe("done");
+  });
+});
+
+describe("job cancellation", () => {
+  it("cancels one job", async () => {
+    vi.stubGlobal("fetch", mockFetch(200, { job_id: "j1", status: "failed" }));
+    const data = await cancelJob("j1");
+    expect(data.status).toBe("failed");
+  });
+
+  it("cancels all active jobs", async () => {
+    vi.stubGlobal("fetch", mockFetch(200, { cancelled: 2 }));
+    const data = await cancelActiveJobs();
+    expect(data.cancelled).toBe(2);
   });
 });
 
@@ -150,11 +164,11 @@ describe("applyScenario", () => {
     expect(data.applied).toBe(true);
   });
   it("throws ApiError on 404", async () => {
-    vi.stubGlobal("fetch", mockFetch(404, { status: 404, title: "Not found" }, false));
+    vi.stubGlobal("fetch", mockFetch(404, { type: "https://errors.k8s-llm.io/not-found", status: 404, title: "Not found", detail: "Scenario not found" }, false));
     await expect(applyScenario("99-nope")).rejects.toBeInstanceOf(ApiError);
   });
   it("throws ApiError on 409", async () => {
-    vi.stubGlobal("fetch", mockFetch(409, { status: 409, title: "Conflict" }, false));
+    vi.stubGlobal("fetch", mockFetch(409, { type: "https://errors.k8s-llm.io/conflict", status: 409, title: "Conflict", detail: "A scenario is already applied" }, false));
     await expect(applyScenario("05-oom")).rejects.toBeInstanceOf(ApiError);
   });
 });
@@ -164,6 +178,52 @@ describe("resetScenarios", () => {
     vi.stubGlobal("fetch", mockFetch(200, { reset: true }));
     const data = await resetScenarios();
     expect(data.reset).toBe(true);
+  });
+});
+
+const SETTINGS_BODY = {
+  provider: "openai",
+  model: null,
+  source: "env",
+  providers: [
+    { id: "mock", name: "Mock (heuristic)", model: "(none)", available: true },
+    { id: "openai", name: "OpenAI", model: "gpt-4o-mini", available: false },
+  ],
+} as const;
+
+describe("getSettings", () => {
+  it("returns config status", async () => {
+    vi.stubGlobal("fetch", mockFetch(200, SETTINGS_BODY));
+    const data = await getSettings();
+    expect(data.provider).toBe("openai");
+    expect(data.providers).toHaveLength(2);
+  });
+  it("throws ApiError on failure", async () => {
+    vi.stubGlobal("fetch", mockFetch(500, { type: "https://errors.k8s-llm.io/internal", status: 500, title: "Internal server error", detail: "An unexpected error occurred" }, false));
+    await expect(getSettings()).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+describe("saveSettings", () => {
+  it("posts provider, key and model", async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ provider: "openai", model: "gpt-4o", source: "file", providers: [] }),
+    });
+    vi.stubGlobal("fetch", fetcher);
+    await saveSettings({ provider: "openai", api_key: "sk-secret", clear_key: false, model: "gpt-4o" });
+    expect(fetcher.mock.calls[0][1].method).toBe("POST");
+    const body = JSON.parse(fetcher.mock.calls[0][1].body);
+    expect(body.provider).toBe("openai");
+    expect(body.api_key).toBe("sk-secret");
+  });
+});
+
+describe("listProviders", () => {
+  it("returns provider list", async () => {
+    vi.stubGlobal("fetch", mockFetch(200, { items: SETTINGS_BODY.providers }));
+    const data = await listProviders();
+    expect(data.items).toHaveLength(2);
   });
 });
 

@@ -1,0 +1,13 @@
+{
+  "scenario_id": "14-missing-configmap",
+  "name": "Missing ConfigMap",
+  "description": "Pod references missing-demo-config through envFrom and cannot create its container",
+  "true_root_cause": "The deployment references a ConfigMap that does not exist",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "config",
+  "true_severity": "critical",
+  "expected_log_patterns": ["CreateContainerConfigError", "configmap", "not found"],
+  "expected_event_reasons": ["Failed", "BackOff"],
+  "correct_remediation_keywords": ["ConfigMap", "envFrom", "create", "deployment"],
+  "notes": "The pod is blocked before the application container starts."
+}

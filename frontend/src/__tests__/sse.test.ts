@@ -28,7 +28,7 @@ describe("streamJob", () => {
 
   it("calls addEventListener for stage, done, failed", () => {
     streamJob("test-job", () => {});
-    const es = (globalThis.EventSource as ReturnType<typeof vi.fn>).mock.results[0]?.value;
+    const es = (globalThis.EventSource as unknown as { mock: { results: { value: { addEventListener: ReturnType<typeof vi.fn> } }[] } }).mock.results[0]?.value;
     expect(es.addEventListener).toHaveBeenCalledWith("stage", expect.any(Function));
     expect(es.addEventListener).toHaveBeenCalledWith("done", expect.any(Function));
     expect(es.addEventListener).toHaveBeenCalledWith("failed", expect.any(Function));

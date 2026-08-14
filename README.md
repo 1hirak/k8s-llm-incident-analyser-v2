@@ -12,7 +12,7 @@ dashboard as the pipeline progresses through its stages.
 
 ## Architecture
 
-Seven FastAPI microservices + Redis + SQLite + Next.js frontend, defined
+Nine FastAPI microservices + Redis + SQLite + Next.js frontend, defined
 contract-first in [`contracts/`](contracts/README.md) (the Single Source of
 Truth: OpenAPI, SQL DDL, Redis schema, infra topology).
 
@@ -54,6 +54,11 @@ done/failed`) to Redis; the frontend streams them live over SSE.
 
 ## Quickstart
 
+For a container installation that connects to an existing Kubernetes cluster,
+start with [`docs/INSTALLATION.md`](docs/INSTALLATION.md). The commands below
+are the local Minikube demo path; they do not configure access to a customer's
+cluster.
+
 ### Prerequisites
 
 - Docker + Docker Compose
@@ -66,8 +71,12 @@ done/failed`) to Redis; the frontend streams them live over SSE.
 git clone https://github.com/1hirak/k8s-llm-incident-analyser.git
 cd k8s-llm-incident-analyser
 
-# Start everything (mock LLM provider — no API keys needed)
-docker compose up --build -d
+# Start everything, including minikube and the demo workload
+# (mock LLM provider — no API keys needed)
+make up
+
+# Restart the complete local environment without deleting stored data
+make restart
 
 # Open the dashboard
 open http://localhost:3000
@@ -76,24 +85,42 @@ open http://localhost:3000
 curl http://localhost:8000/health
 ```
 
-### Kubernetes (minikube) — platform in-cluster
+### External Kubernetes cluster (Docker Compose)
 
 ```bash
-minikube start
-eval $(minikube docker-env)
+cp .env.external.example .env.external
+./scripts/create_external_kubeconfig.sh \
+  --output "$PWD/.runtime/external-kubeconfig" \
+  --namespaces production,staging \
+  --remediation
+# Set KUBECONFIG_FILE, GATEWAY_API_TOKEN, LLM_PROVIDER, and namespaces in .env.external.
+make external-up
+curl -H "Authorization: Bearer ${GATEWAY_API_TOKEN}" http://localhost:8000/health
+```
 
-# Build all images into minikube's daemon
-docker build -t k8s-demo-app:latest ./demo-app
-for svc in gateway orchestrator collector processor llm reports scenario; do
-  docker build -f services/$svc/Dockerfile -t k8s-llm-$svc-svc:latest .
-done
-docker build -t k8s-llm-frontend:latest ./frontend
+The watcher continuously submits deduplicated analysis jobs for unhealthy pods.
+Remediation is disabled unless explicitly enabled and always requires a
+server-side dry-run followed by operator approval. See the installation guide
+for RBAC and credential rotation details.
 
-# Deploy the demo workload + the platform
-kubectl apply -f k8s/base/
-kubectl apply -f k8s/services/
+### Kubernetes (minikube) — platform in-cluster
 
-# Dashboard: http://$(minikube ip):30030  ·  Gateway: http://$(minikube ip):30080
+`make up` uses minikube as the target cluster for the Compose collector and
+scenario services. It starts the `minikube` profile when needed, builds the
+demo image into minikube, applies `k8s/base/`, waits for `demo-app`, and then
+starts the Docker Compose platform.
+
+To run the minikube setup without starting Compose:
+
+```bash
+MINIKUBE_DRIVER=docker minikube start
+minikube image build -t demo-app:latest ./demo-app
+kubectl apply -f k8s/base/namespace.yaml
+kubectl wait --for=jsonpath='{.status.phase}'=Active namespace/demo --timeout=60s
+kubectl apply -f k8s/base/configmap.yaml
+kubectl apply -f k8s/base/deployment.yaml
+kubectl apply -f k8s/base/service.yaml
+kubectl rollout status deployment/demo-app -n demo --timeout=180s
 ```
 
 ### Local development (hot reload)
@@ -120,12 +147,20 @@ Copy `.env.example` to `.env`. Only the **llm-svc** holds external API keys.
 
 | Variable            | Default         | Description                          |
 |---------------------|-----------------|--------------------------------------|
-| `LLM_PROVIDER`      | `mock`          | `mock` / `openai` / `anthropic` / `deepseek` |
-| `OPENAI_API_KEY`    | —               | Required if provider is `openai`     |
-| `ANTHROPIC_API_KEY` | —               | Required if provider is `anthropic`  |
-| `DEEPSEEK_API_KEY`  | —               | Required if provider is `deepseek`   |
+| `LLM_PROVIDER`    | `mock`          | `mock` / `openai` / `anthropic` / `deepseek` / `openrouter` |
+| `OPENAI_API_KEY`    | —             | Required if provider is `openai`     |
+| `ANTHROPIC_API_KEY` | —             | Required if provider is `anthropic`  |
+| `DEEPSEEK_API_KEY`  | —             | Required if provider is `deepseek`   |
+| `OPENROUTER_API_KEY` | —            | Required if provider is `openrouter` |
 | `LLM_MODEL`         | provider-specific | Model name override                |
-| `LLM_MAX_TOKENS`    | `2000`          | Max tokens for LLM response          |
+| `LLM_MAX_TOKENS`    | `4096`          | Normal LLM response budget           |
+| `LLM_RETRY_MAX_TOKENS` | `8192`       | One truncation retry budget          |
+| `OPENROUTER_REASONING_EFFORT` | — | Optional OpenRouter reasoning effort |
+| `OPENROUTER_PROMPT_CACHE` | `true` | Cache stable prompt content          |
+| `OPENROUTER_RESPONSE_CACHE` | `false` | Optional full-response edge cache  |
+| `REDIS_URL`          | `redis://redis:6379/0` | LLM result cache connection |
+| `LLM_ANALYSIS_CACHE_TTL` | `900`    | Validated report cache TTL (seconds) |
+| `LLM_CONFIG_PATH`   | `/data/llm-config.json` | Runtime config file; the Settings page writes keys/model here (takes precedence over the env keys above) |
 | `NEXT_PUBLIC_API_URL` | `http://localhost:8000` | Gateway URL (inlined at frontend build time) |
 
 ## Public API (gateway-svc, :8000)
@@ -133,6 +168,7 @@ Copy `.env.example` to `.env`. Only the **llm-svc** holds external API keys.
 | Method | Path                                  | Purpose                              |
 |--------|---------------------------------------|--------------------------------------|
 | GET    | `/health`                             | Liveness + configured LLM provider   |
+| GET    | `/api/cluster/status?namespace=...`    | Target API/auth/RBAC diagnostics      |
 | POST   | `/api/jobs`                           | Start an analysis job (202 + job_id) |
 | GET    | `/api/jobs`                           | List jobs (paginated, filterable)    |
 | GET    | `/api/jobs/{job_id}`                  | Job state                            |
@@ -143,6 +179,9 @@ Copy `.env.example` to `.env`. Only the **llm-svc** holds external API keys.
 | GET    | `/api/scenarios`                      | List fault scenarios                 |
 | POST   | `/api/scenarios/{scenario_id}/apply`  | Apply a fault (409 if one active)    |
 | POST   | `/api/scenarios/reset`                | Reset cluster to healthy baseline    |
+| GET    | `/api/settings`                       | Active LLM provider + availability   |
+| POST   | `/api/settings`                       | Set provider, API key, model override|
+| GET    | `/api/settings/providers`             | List providers with availability     |
 
 All errors are RFC 7807 Problem Details. Full spec:
 [`contracts/api/gateway.yaml`](contracts/api/gateway.yaml).
@@ -173,13 +212,14 @@ curl http://localhost:8000/api/reports/01938a7c-...
 | `/reports`    | Paginated, filterable report list                               |
 | `/reports/id` | Full report: root cause, evidence, fix, copyable kubectl commands |
 | `/scenarios`  | Apply/reset fault scenarios with confirmation dialogs           |
+| `/settings`   | LLM provider config: active provider, API keys, model override |
 
 TypeScript types are generated from the OpenAPI contract
 (`cd frontend && npm run generate:types`).
 
 ## Fault Scenarios
 
-Ten scenarios exercise distinct failure categories (unchanged from v1):
+Twenty-five scenarios cover the most common Kubernetes failure modes:
 
 | #  | Scenario        | Category   | Fault                         |
 |----|-----------------|------------|-------------------------------|
@@ -193,6 +233,21 @@ Ten scenarios exercise distinct failure categories (unchanged from v1):
 | 08 | bad-configmap   | config     | Invalid LOG_LEVEL             |
 | 09 | app-exception   | crash      | STARTUP_FAULT=crash           |
 | 10 | wrong-port      | network    | Service targetPort mismatch   |
+| 11 | failed-scheduling | resource | Invalid node hostname         |
+| 12 | insufficient-memory | resource | 999Gi memory request        |
+| 13 | insufficient-cpu | resource   | 99 CPU core request           |
+| 14 | missing-configmap | config    | Missing envFrom ConfigMap     |
+| 15 | missing-secret | config      | Missing envFrom Secret        |
+| 16 | startup-probe  | probe      | Invalid startup probe path    |
+| 17 | failed-mount   | config     | Undefined volume mount        |
+| 18 | service-no-endpoints | network | Service selector mismatch  |
+| 19 | dns-failure    | dependency | Unresolvable database host    |
+| 20 | evicted        | resource   | Ephemeral storage exhaustion  |
+| 21 | cpu-throttling | resource   | 1m CPU limit                  |
+| 22 | node-selector  | resource   | Incompatible OS selector      |
+| 23 | invalid-image-pull-secret | image | Missing registry Secret |
+| 24 | missing-service-account | config | Missing ServiceAccount      |
+| 25 | readonly-filesystem | crash | Read-only root filesystem      |
 
 Apply via the dashboard, the API, or `scripts/run_scenario.sh 05-oom`.
 
@@ -226,17 +281,20 @@ k8s-llm-incident-analyser/
 │   ├── llm/                  # :8004 LLM providers (mock/openai/anthropic/deepseek)
 │   ├── reports/              # :8005 SQLite persistence
 │   └── scenario/             # :8006 fault scenario management
+│   ├── watcher/              # :8007 read-only continuous unhealthy-pod watcher
+│   └── remediation/          # :8008 approval-gated typed Kubernetes changes
 │   (each with app/, tests/, requirements.txt, Dockerfile)
 ├── frontend/                 # Next.js 15 dashboard
 ├── demo-app/                 # Fault-injecting demo workload
 ├── evaluation/               # Harness (HTTP), baselines, ground truth, metrics
 ├── k8s/
 │   ├── base/                 # Healthy demo-app deployment
-│   ├── scenarios/            # 10 fault-injecting strategic merge patches
+│   ├── scenarios/            # 25 fault-injecting strategic merge patches
 │   └── services/             # Platform deployment manifests (+ RBAC)
 ├── tests/                    # Root suites: evaluation, manifests, integration
 ├── scripts/                  # run_scenario.sh, e2e_smoke.sh
-├── docker-compose.yml        # Full 11-container platform stack
+├── docker-compose.yml        # Full platform + local demo stack
+├── docker-compose.external.yml # External-cluster container overlay
 ├── docker-compose.dev.yml    # Hot-reload dev override
 └── Makefile                  # Dev task runner
 ```

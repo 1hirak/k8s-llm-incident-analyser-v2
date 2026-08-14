@@ -34,6 +34,8 @@ spec:
               value: "/k8s/base"
             - name: GROUND_TRUTH_DIR
               value: "/evaluation/ground_truth"
+            - name: KUBERNETES_AUTH_MODE
+              value: "in-cluster"
           readinessProbe:
             httpGet:
               path: /health

@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { FlaskConical, LoaderCircle, Play, RotateCcw } from "lucide-react";
+import { FlaskConical, LoaderCircle, Zap } from "lucide-react";
 import { toast } from "sonner";
 
+import { ActiveErrorBanner } from "@/components/active-error-banner";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { PageHeader } from "@/components/page-header";
@@ -26,7 +27,19 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ApiError, applyScenario, listScenarios, resetScenarios } from "@/lib/api";
+import {
+  ApiError,
+  applyScenario,
+  cancelActiveJobs,
+  listScenarios,
+  resetScenarios,
+} from "@/lib/api";
+import {
+  addErrorQueueItem,
+  getActiveScenarioErrors,
+  markAllActiveScenarioErrorsFixed,
+  type ErrorQueueItem,
+} from "@/lib/error-queue";
 import type { ScenarioSummary } from "@/types";
 
 export default function ScenariosPage() {
@@ -35,9 +48,9 @@ export default function ScenariosPage() {
   const [error, setError] = useState<string | null>(null);
   const [confirmScenario, setConfirmScenario] =
     useState<ScenarioSummary | null>(null);
-  const [confirmReset, setConfirmReset] = useState(false);
   const [applying, setApplying] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [activeErrors, setActiveErrors] = useState<ErrorQueueItem[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -56,24 +69,52 @@ export default function ScenariosPage() {
 
   useEffect(() => {
     load();
+    setActiveErrors(getActiveScenarioErrors());
+
+    function onStorage(event: StorageEvent) {
+      if (event.key === "k8s-incident-analyser.error-queue.v1") {
+        setActiveErrors(getActiveScenarioErrors());
+      }
+    }
+
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, [load]);
 
   async function onApplyConfirm() {
     if (!confirmScenario) return;
+
     setApplying(true);
     try {
       const res = await applyScenario(confirmScenario.scenario_id);
-      toast.success(`Applied ${confirmScenario.name}`, {
+
+      addErrorQueueItem({
+        source: "scenario",
+        scenarioId: confirmScenario.scenario_id,
+        scenarioName: confirmScenario.name,
+        namespace: "demo",
+        podName: "demo-app",
+        category: confirmScenario.category,
+        severity: confirmScenario.severity,
+        status: "triggered",
+      });
+
+      setActiveErrors(getActiveScenarioErrors());
+      toast.success("Error triggered successfully", {
         description: res.fault_description ?? "The fault is now live in the cluster.",
       });
       setConfirmScenario(null);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
-        toast.warning("A scenario is already applied", {
-          description: "Reset the cluster before applying another scenario.",
+        toast.warning("This scenario is already active", {
+          description: "Choose a different scenario or reset the demo workload.",
+          action: {
+            label: "Reset demo",
+            onClick: () => void resetDemo(),
+          },
         });
       } else {
-        toast.error("Failed to apply scenario", {
+        toast.error("Failed to trigger error", {
           description:
             err instanceof ApiError ? err.message : "Unexpected error.",
         });
@@ -83,17 +124,21 @@ export default function ScenariosPage() {
     }
   }
 
-  async function onResetConfirm() {
+  async function resetDemo() {
+    if (resetting) return;
     setResetting(true);
     try {
+      await cancelActiveJobs();
       await resetScenarios();
-      toast.success("Cluster reset", {
-        description: "The demo deployment is back to its healthy baseline.",
+      markAllActiveScenarioErrorsFixed();
+      setActiveErrors([]);
+      toast.success("Demo workload reset", {
+        description: "You can trigger the same scenario again.",
       });
-      setConfirmReset(false);
     } catch (err) {
-      toast.error("Failed to reset cluster", {
-        description: err instanceof ApiError ? err.message : "Unexpected error.",
+      toast.error("Could not reset the demo workload", {
+        description:
+          err instanceof ApiError ? err.message : "Unexpected error.",
       });
     } finally {
       setResetting(false);
@@ -103,25 +148,25 @@ export default function ScenariosPage() {
   return (
     <>
       <PageHeader
-        title="Scenarios"
-        description="Fault scenarios for the demo cluster — apply one, then analyse the failing pod"
-      >
-        <Button
-          variant="outline"
-          className="border-red-500/40 text-red-400 hover:bg-red-500/10 hover:text-red-400"
-          onClick={() => setConfirmReset(true)}
-        >
-          <RotateCcw />
-          Reset cluster
-        </Button>
-      </PageHeader>
+        title="Trigger an Error"
+        description="Choose from 25 common Kubernetes failure modes to generate a controlled failure in the demo workload. The error will appear in your Error Queue where you can diagnose and fix it."
+      />
+
+      {activeErrors.length > 0 ? (
+        <ActiveErrorBanner
+          errors={activeErrors}
+          className="mb-6"
+          onReset={() => void resetDemo()}
+          resetting={resetting}
+        />
+      ) : null}
 
       {error ? (
         <ErrorState message={error} onRetry={load} />
       ) : loading ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-44" />
+            <Skeleton key={i} className="h-56" />
           ))}
         </div>
       ) : !scenarios || scenarios.length === 0 ? (
@@ -146,7 +191,7 @@ export default function ScenariosPage() {
                   {scenario.scenario_id}
                 </CardDescription>
               </CardHeader>
-              <CardContent className="flex-1">
+              <CardContent className="flex-1 space-y-3">
                 <p className="text-muted-foreground text-sm leading-relaxed">
                   {scenario.description}
                 </p>
@@ -156,9 +201,10 @@ export default function ScenariosPage() {
                   variant="secondary"
                   size="sm"
                   onClick={() => setConfirmScenario(scenario)}
+                  aria-label={`Trigger ${scenario.name}`}
                 >
-                  <Play />
-                  Apply
+                  <Zap />
+                  Trigger Error
                 </Button>
               </CardFooter>
             </Card>
@@ -174,17 +220,23 @@ export default function ScenariosPage() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Apply {confirmScenario?.name}?</DialogTitle>
+            <DialogTitle>Trigger &ldquo;{confirmScenario?.name}&rdquo;?</DialogTitle>
             <DialogDescription>
-              This modifies live cluster state — the demo deployment will start
-              failing until you reset it. Run an analysis from the Analyse page
-              once the pod begins to fail.
+              This will intentionally modify the demo Kubernetes workload and
+              cause a failure. You will be able to diagnose the failure from the
+              Error Queue.
             </DialogDescription>
           </DialogHeader>
           {confirmScenario ? (
-            <p className="bg-muted/40 rounded-md border p-3 font-mono text-xs">
-              {confirmScenario.scenario_id} — {confirmScenario.description}
-            </p>
+            <div className="bg-muted/40 space-y-2 rounded-md border p-3 text-sm">
+              <p className="font-medium">{confirmScenario.name}</p>
+              <p className="text-muted-foreground text-xs">
+                {confirmScenario.scenario_id}
+              </p>
+              <p className="text-muted-foreground text-xs">
+                {confirmScenario.description}
+              </p>
+            </div>
           ) : null}
           <DialogFooter>
             <Button
@@ -198,50 +250,13 @@ export default function ScenariosPage() {
               {applying ? (
                 <>
                   <LoaderCircle className="animate-spin" />
-                  Applying…
+                  Triggering…
                 </>
               ) : (
-                "Apply scenario"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={confirmReset}
-        onOpenChange={(open) => {
-          if (!open && !resetting) setConfirmReset(false);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Reset cluster?</DialogTitle>
-            <DialogDescription>
-              Removes any applied fault and re-applies the base manifests. The
-              demo deployment returns to its healthy baseline.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setConfirmReset(false)}
-              disabled={resetting}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={onResetConfirm}
-              disabled={resetting}
-            >
-              {resetting ? (
                 <>
-                  <LoaderCircle className="animate-spin" />
-                  Resetting…
+                  <Zap />
+                  Trigger Error
                 </>
-              ) : (
-                "Reset cluster"
               )}
             </Button>
           </DialogFooter>

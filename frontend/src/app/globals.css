@@ -20,16 +20,16 @@
   --surface-hover: rgba(255, 255, 255, 0.08);
   --foreground: #edefef;
   --foreground-muted: #8a8f98;
-  --accent-indigo: #5e6ad2;
-  --accent-bright: #6872d9;
-  --accent-glow: rgba(94, 106, 210, 0.3);
+  --accent-indigo: #5e76d8;
+  --accent-bright: #6fdbd0;
+  --accent-glow: rgba(94, 118, 216, 0.3);
 
   /* shadcn semantic mapping */
   --card: #0a0a0c;
   --card-foreground: #edefef;
   --popover: #0f0f12;
   --popover-foreground: #edefef;
-  --primary: #5e6ad2;
+  --primary: #5e76d8;
   --primary-foreground: #ffffff;
   --secondary: rgba(255, 255, 255, 0.05);
   --secondary-foreground: #edefef;
@@ -40,12 +40,12 @@
   --destructive: oklch(0.704 0.191 22.216);
   --border: rgba(255, 255, 255, 0.06);
   --input: rgba(255, 255, 255, 0.1);
-  --ring: #5e6ad2;
-  --chart-1: #5e6ad2;
-  --chart-2: #8b93e8;
+  --ring: #5e76d8;
+  --chart-1: #5e76d8;
+  --chart-2: #6fdbd0;
   --chart-3: #8a8f98;
-  --chart-4: #3d44a0;
-  --chart-5: #b4b9f8;
+  --chart-4: #354b9b;
+  --chart-5: #b4f3e9;
 }
 
 @theme inline {
@@ -139,5 +139,149 @@
   }
   body {
     @apply bg-background text-foreground;
+    min-width: 320px;
   }
+}
+
+@layer components {
+  .page-enter {
+    animation: page-enter 420ms var(--ease-expo-out) both;
+  }
+
+  .eyebrow {
+    color: color-mix(in srgb, var(--muted-foreground) 82%, white);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    line-height: 1.2;
+    text-transform: uppercase;
+  }
+
+  .metric-tile {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 14px;
+    display: flex;
+    gap: 12px;
+    min-height: 72px;
+    padding: 14px 16px;
+  }
+
+  .metric-icon {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 9px;
+    display: flex;
+    height: 32px;
+    justify-content: center;
+    width: 32px;
+  }
+
+  .metric-tile span:last-child {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .metric-tile strong {
+    font-size: 17px;
+    letter-spacing: -0.02em;
+  }
+
+  .metric-tile small {
+    color: var(--muted-foreground);
+    font-size: 11px;
+  }
+
+  .workflow-rail {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 16px;
+    display: flex;
+    min-height: 72px;
+    padding: 12px 18px;
+  }
+
+  .workflow-dot {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.055);
+    border: 1px solid rgba(255, 255, 255, 0.11);
+    border-radius: 999px;
+    color: var(--muted-foreground);
+    display: flex;
+    flex-shrink: 0;
+    height: 32px;
+    justify-content: center;
+    width: 32px;
+  }
+
+  .workflow-dot-current {
+    background: rgba(111, 219, 208, 0.12);
+    border-color: rgba(111, 219, 208, 0.45);
+    color: #b4f3e9;
+    box-shadow: 0 0 0 4px rgba(111, 219, 208, 0.06);
+  }
+
+  .workflow-dot-complete {
+    background: rgba(52, 211, 153, 0.12);
+    border-color: rgba(52, 211, 153, 0.35);
+    color: #86efac;
+  }
+
+  .workflow-line {
+    background: rgba(255, 255, 255, 0.09);
+    height: 1px;
+    margin: 0 12px;
+    min-width: 12px;
+    width: 100%;
+  }
+
+  .workflow-line-complete {
+    background: rgba(52, 211, 153, 0.4);
+  }
+
+  .scenario-tile {
+    background: linear-gradient(145deg, rgba(255,255,255,0.055), rgba(255,255,255,0.025));
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    min-height: 194px;
+    padding: 17px;
+    transition: border-color 180ms ease, background 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+  }
+
+  .scenario-tile:hover:not(:disabled) {
+    background: linear-gradient(145deg, rgba(111,219,208,0.09), rgba(255,255,255,0.035));
+    border-color: rgba(111, 219, 208, 0.32);
+    box-shadow: 0 12px 35px rgba(0, 0, 0, 0.24);
+    transform: translateY(-2px);
+  }
+
+  .scenario-icon {
+    align-items: center;
+    background: rgba(94, 118, 216, 0.14);
+    border: 1px solid rgba(94, 118, 216, 0.2);
+    border-radius: 10px;
+    color: #a9b5ff;
+    display: flex;
+    height: 36px;
+    justify-content: center;
+    width: 36px;
+  }
+}
+
+@keyframes page-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 640px) {
+  .workflow-rail { padding: 12px; }
+  .workflow-line { margin: 0 6px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter, .scenario-tile { animation: none; transition: none; }
 }

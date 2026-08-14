@@ -6,7 +6,7 @@ import httpx
 from app.store import JobStore
 from k8s_llm_shared import new_id
 
-from .conftest import read_sse_events
+from .conftest import REPORT_JSON, read_sse_events
 
 
 class TestHealth:
@@ -57,6 +57,27 @@ class TestGetJob:
         assert resp.status_code == 404
         body = resp.json()
         assert body["status"] == 404
+
+    def test_cancel_existing_job(self, api_client, fake_redis):
+        job_id = new_id()
+        store = JobStore(fake_redis)
+        asyncio.run(store.create(job_id, "demo", "demo-app"))
+
+        resp = api_client.post(f"/jobs/{job_id}/cancel")
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "failed"
+        assert resp.json()["error"] == "Diagnosis cancelled by user"
+
+    def test_cancel_active_jobs(self, api_client, fake_redis):
+        job_id = new_id()
+        store = JobStore(fake_redis)
+        asyncio.run(store.create(job_id, "demo", "demo-app"))
+
+        resp = api_client.post("/jobs/active/cancel")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"cancelled": 1}
 
 
 class TestListJobs:
@@ -162,3 +183,27 @@ class TestStreamLive:
         statuses = [e[1]["status"] for e in events if e[0] == "stage"]
         assert "collecting" in statuses
         assert "processing" in statuses
+
+    async def test_stream_rechecks_state_after_subscribing(self, fake_redis):
+        """A terminal transition cannot be lost by a late SSE subscriber."""
+        from app.main import app
+        from k8s_llm_shared import IncidentReport
+
+        app.state.redis = fake_redis
+        app.state.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(404))
+        )
+        store = JobStore(fake_redis)
+        job_id = new_id()
+        await store.create(job_id, "demo", "demo-app")
+        report = IncidentReport(**REPORT_JSON)
+        await store.complete(job_id, report.incident_id, 100, report)
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            async with client.stream("GET", f"/jobs/{job_id}/stream") as resp:
+                body = await resp.aread()
+
+        assert b"event: done" in body

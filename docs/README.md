@@ -8,8 +8,15 @@ Everything written about this platform, and when to read it.
 |----------|---------------|
 | **[`DEEP-DIVE.md`](./DEEP-DIVE.md)** | You want to understand the **whole software** — design philosophy, architecture, a hop-by-hop trace of an analysis job, every service, the frontend, evaluation, testing, deployment, and an operational playbook. This is the flagship guide. |
 | **[`Technical-Documentation.md`](./Technical-Documentation.md)** | You need the **exhaustive A-to-Z reference** — every endpoint, env var, schema, enum, algorithm, test suite, CI job, and deployment detail, verified against the current microservices codebase. |
+| **[`INSTALLATION.md`](./INSTALLATION.md)** | You need to run the analyser in a container against an external Kubernetes cluster, configure RBAC, enable the watcher, or approve a remediation. |
 | [`architecture.md`](./architecture.md) | You want the **10-minute** version: topology, responsibilities, data stores, pipeline stages. |
 | [`../contracts/README.md`](../contracts/README.md) | You are changing any API, schema, enum, or infra — the contracts are the Single Source of Truth and change **before** code. |
+
+## Focused Guides
+
+| Document | Contents |
+|----------|----------|
+| [`ERRORS-AND-LOGGING.md`](./ERRORS-AND-LOGGING.md) | How the ten scenarios trigger workload failures, how `kubectl` evidence is collected, how logs are filtered and redacted, and how pipeline errors are surfaced and stored. |
 
 ## Reference
 

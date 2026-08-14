@@ -1,7 +1,7 @@
 """scenario-svc — fault scenario management service.
 
 Implements contracts/api/scenario.yaml. Lists available fault scenarios,
-applies faults via kubectl patch, and resets the cluster to the healthy
+applies one or more faults via kubectl patch, and resets the cluster to the healthy
 baseline. The only service that needs Kubernetes write RBAC.
 """
 

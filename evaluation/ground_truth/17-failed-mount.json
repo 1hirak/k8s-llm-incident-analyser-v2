@@ -1,0 +1,13 @@
+{
+  "scenario_id": "17-failed-mount",
+  "name": "Failed Volume Mount",
+  "description": "Container mounts missing-data-volume, which is not defined in the pod spec",
+  "true_root_cause": "The pod references a volume that is not defined",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "config",
+  "true_severity": "high",
+  "expected_log_patterns": ["FailedMount", "volume", "not found"],
+  "expected_event_reasons": ["FailedMount", "Failed"],
+  "correct_remediation_keywords": ["volume", "volumeMounts", "persistent volume", "deployment"],
+  "notes": "The container cannot start until the missing volume reference is fixed."
+}

@@ -42,3 +42,23 @@ export function formatPercent(value: number | null | undefined): string {
 export function shortId(id: string): string {
   return id.slice(0, 8);
 }
+
+/** Simple relative time formatter (e.g. "2 minutes ago"). */
+export function formatRelativeTime(iso: string): string {
+  const date = new Date(iso);
+  const now = new Date();
+  const seconds = Math.max(0, Math.floor((now.getTime() - date.getTime()) / 1000));
+
+  if (Number.isNaN(seconds)) return iso;
+  if (seconds < 10) return "just now";
+  if (seconds < 60) return `${seconds} seconds ago`;
+
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return minutes === 1 ? "1 minute ago" : `${minutes} minutes ago`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours === 1 ? "1 hour ago" : `${hours} hours ago`;
+
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "1 day ago" : `${days} days ago`;
+}

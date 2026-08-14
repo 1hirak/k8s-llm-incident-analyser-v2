@@ -1,10 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { EmptyState } from "@/components/empty-state";
 import { ConfidenceMeter } from "@/components/confidence-meter";
 import { CopyButton } from "@/components/copy-button";
 import { PageHeader } from "@/components/page-header";
 import { StatCard } from "@/components/stat-card";
+import { DiagnosisProgress } from "@/components/diagnosis-progress";
+import type { ActivityEntry } from "@/hooks/use-diagnosis-job";
 import { Box } from "lucide-react";
 
 describe("EmptyState", () => {
@@ -58,6 +61,85 @@ describe("ConfidenceMeter", () => {
   it("hides label when showLabel=false", () => {
     render(<ConfidenceMeter value={0.5} showLabel={false} />);
     expect(screen.queryByText("50%")).not.toBeInTheDocument();
+  });
+});
+
+describe("DiagnosisProgress", () => {
+  it("does not keep the final stage spinning after completion", () => {
+    const { container } = render(
+      <DiagnosisProgress status="done" stage="Saving report" />,
+    );
+
+    expect(screen.getByText("Creating diagnosis")).toBeInTheDocument();
+    expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
+  });
+
+  it("hides the behind-the-scenes trace until the toggle is clicked", async () => {
+    const activity: ActivityEntry[] = [
+      { kind: "stage", status: "collecting", detail: "Collecting evidence", at: 1_000 },
+      { kind: "stage", status: "llm_call", detail: "Calling mock (none)", at: 2_000 },
+      { kind: "stage", status: "persisting", detail: "Saving report", at: 5_500 },
+    ];
+    render(
+      <DiagnosisProgress
+        status="persisting"
+        stage="Saving report"
+        activity={activity}
+      />,
+    );
+
+    expect(
+      screen.queryByText(/Redacted evidence package sent/),
+    ).not.toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /behind the scenes/i }),
+    );
+
+    expect(
+      screen.getByText(/Redacted evidence package sent to llm-svc/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Response received after/)).toBeInTheDocument();
+  });
+
+  it("shows the error line when the llm call failed", async () => {
+    const activity: ActivityEntry[] = [
+      { kind: "stage", status: "llm_call", detail: "Calling mock (none)", at: 2_000 },
+      {
+        kind: "failed",
+        status: "failed",
+        detail: "llm-svc returned 500: boom",
+        at: 9_000,
+      },
+    ];
+    render(
+      <DiagnosisProgress status="llm_call" failed activity={activity} />,
+    );
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /behind the scenes/i }),
+    );
+
+    expect(
+      screen.getByText(/llm-svc returned an error after 7.0 s — llm-svc returned 500: boom/),
+    ).toBeInTheDocument();
+  });
+
+  it("renders no trace toggle before the llm stage is reached", () => {
+    const activity: ActivityEntry[] = [
+      { kind: "stage", status: "collecting", detail: "Collecting evidence", at: 1_000 },
+    ];
+    render(
+      <DiagnosisProgress
+        status="collecting"
+        stage="Collecting evidence"
+        activity={activity}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: /behind the scenes/i }),
+    ).not.toBeInTheDocument();
   });
 });
 

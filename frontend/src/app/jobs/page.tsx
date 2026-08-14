@@ -7,6 +7,8 @@ import {
   ChevronRight,
   ListChecks,
   RotateCw,
+  Trash2,
+  XCircle,
 } from "lucide-react";
 
 import { EmptyState } from "@/components/empty-state";
@@ -30,7 +32,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ApiError, listJobs } from "@/lib/api";
+import {
+  ApiError,
+  cancelActiveJobs,
+  clearJobQueue,
+  listJobs,
+} from "@/lib/api";
 import { formatDateTime, formatLatency, shortId } from "@/lib/utils";
 import type { JobListResponse, JobStatus } from "@/types";
 
@@ -53,6 +60,8 @@ export default function JobsPage() {
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<"all" | JobStatus>("all");
   const [offset, setOffset] = useState(0);
+  const [clearing, setClearing] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -82,11 +91,49 @@ export default function JobsPage() {
   const from = count === 0 ? 0 : offset + 1;
   const to = Math.min(offset + PAGE_SIZE, count);
 
+  async function onClearQueue() {
+    if (!window.confirm("Delete all pending queue entries? Running analyses will continue.")) {
+      return;
+    }
+    setClearing(true);
+    try {
+      const result = await clearJobQueue();
+      await load();
+      window.alert(
+        `Cleared ${result.cleared} pending queue entr${result.cleared === 1 ? "y" : "ies"}.`,
+      );
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to clear the queue.");
+    } finally {
+      setClearing(false);
+    }
+  }
+
+  async function onCancelActive() {
+    if (!window.confirm("Cancel all running diagnosis jobs?")) return;
+    setCancelling(true);
+    try {
+      const result = await cancelActiveJobs();
+      await load();
+      window.alert(
+        `Cancelled ${result.cancelled} active diagnosis${result.cancelled === 1 ? "" : "es"}.`,
+      );
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : "Failed to cancel active diagnoses.",
+      );
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   return (
     <>
       <PageHeader
-        title="Jobs"
-        description="Analysis pipeline runs, newest first"
+        title="Activity"
+        description="Technical analysis job history — backend pipeline runs, newest first"
       >
         <Select
           value={statusFilter}
@@ -115,6 +162,24 @@ export default function JobsPage() {
         >
           <RotateCw className={loading ? "animate-spin" : undefined} />
         </Button>
+        <Button
+          variant="outline"
+          onClick={onClearQueue}
+          disabled={clearing}
+          title="Delete all pending queue entries"
+        >
+          <Trash2 />
+          {clearing ? "Clearing…" : "Clear queue"}
+        </Button>
+        <Button
+          variant="outline"
+          onClick={onCancelActive}
+          disabled={cancelling}
+          title="Cancel all running diagnosis jobs"
+        >
+          <XCircle />
+          {cancelling ? "Cancelling…" : "Cancel active"}
+        </Button>
       </PageHeader>
 
       {error ? (
@@ -136,7 +201,7 @@ export default function JobsPage() {
           }
         >
           <Button asChild>
-            <Link href="/analyse">Run an analysis</Link>
+            <Link href="/errors">Go to Errors</Link>
           </Button>
         </EmptyState>
       ) : (

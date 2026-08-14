@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { JobStatusBadge, SeverityBadge, CategoryBadge } from "@/components/status-badge";
-import type { JobStatus, Severity, FailureCategory } from "@/types";
 
 describe("JobStatusBadge", () => {
   it("renders queued", () => {

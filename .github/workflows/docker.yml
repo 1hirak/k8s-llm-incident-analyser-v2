@@ -23,6 +23,8 @@ jobs:
           - { name: llm, context: ., file: services/llm/Dockerfile }
           - { name: reports, context: ., file: services/reports/Dockerfile }
           - { name: scenario, context: ., file: services/scenario/Dockerfile }
+          - { name: watcher, context: ., file: services/watcher/Dockerfile }
+          - { name: remediation, context: ., file: services/remediation/Dockerfile }
           - { name: frontend, context: ./frontend, file: frontend/Dockerfile }
           - { name: demo-app, context: ./demo-app, file: demo-app/Dockerfile }
     steps:
@@ -58,6 +60,8 @@ jobs:
           - { name: llm-svc, context: ., file: services/llm/Dockerfile }
           - { name: reports-svc, context: ., file: services/reports/Dockerfile }
           - { name: scenario-svc, context: ., file: services/scenario/Dockerfile }
+          - { name: watcher-svc, context: ., file: services/watcher/Dockerfile }
+          - { name: remediation-svc, context: ., file: services/remediation/Dockerfile }
           - { name: frontend, context: ./frontend, file: frontend/Dockerfile }
     steps:
       - uses: actions/checkout@v4

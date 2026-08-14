@@ -46,7 +46,9 @@ class JobStore:
     # Creation
     # ------------------------------------------------------------------
 
-    async def create(self, job_id: str, namespace: str, pod_name: str) -> None:
+    async def create(
+        self, job_id: str, namespace: str, pod_name: str, target_kind: str = "Pod"
+    ) -> None:
         now = utc_now_iso()
         await self._r.hset(
             _job_key(job_id),
@@ -54,6 +56,7 @@ class JobStore:
                 "job_id": job_id,
                 "namespace": namespace,
                 "pod_name": pod_name,
+                "target_kind": target_kind,
                 "status": "queued",
                 "created_at": now,
                 "updated_at": now,
@@ -61,6 +64,12 @@ class JobStore:
         )
         await self._r.expire(_job_key(job_id), JOB_TTL_SECONDS)
         await self._r.lpush(JOB_QUEUE_KEY, job_id)
+
+    async def clear_queue(self) -> int:
+        """Remove pending queue entries without touching report history."""
+        count = await self._r.llen(JOB_QUEUE_KEY)
+        await self._r.delete(JOB_QUEUE_KEY)
+        return int(count)
 
     # ------------------------------------------------------------------
     # State transitions (each publishes an SSE event)
@@ -99,6 +108,7 @@ class JobStore:
             incident_id=incident_id,
             failure_category=report.failure_category,
             severity=report.severity,
+            active_error=report.active_error,
             latency_ms=latency_ms,
         )
         await self._publish(job_id, event.model_dump())
@@ -159,6 +169,7 @@ class JobStore:
             job_id=data["job_id"],
             namespace=data["namespace"],
             pod_name=data["pod_name"],
+            target_kind=data.get("target_kind", "Pod"),
             status=data["status"],  # type: ignore[arg-type]
             stage=data.get("stage") or None,
             incident_id=data.get("incident_id") or None,

@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 from pathlib import Path
 
 from k8s_llm_shared import ScenarioSummary
+from k8s_llm_shared.kubernetes import KubernetesConnection, configure_kubectl
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +51,20 @@ class ScenarioManager:
         self.base_dir = Path(base_dir)
         self.namespace = namespace
         self.ground_truth_dir = Path(ground_truth_dir) if ground_truth_dir else None
-        self.kubectl = kubectl_path
+        self.connection: KubernetesConnection = configure_kubectl()
+        self.kubectl = os.environ.get("KUBECTL_PATH", kubectl_path)
         self.timeout = timeout
-        self._active: str | None = None
+        self._active: set[str] = set()
+
+    def _command(self, *args: str) -> list[str]:
+        command = [self.kubectl]
+        context = os.environ.get("KUBE_CONTEXT") or os.environ.get(
+            "KUBERNETES_CONTEXT"
+        )
+        if context:
+            command.extend(["--context", context])
+        command.extend(args)
+        return command
 
     # ------------------------------------------------------------------
     # Listing
@@ -68,7 +81,7 @@ class ScenarioManager:
 
     def _summarize(self, scenario_id: str) -> ScenarioSummary:
         meta = self._ground_truth(scenario_id)
-        name = _humanize_name(scenario_id)
+        name = (meta or {}).get("name", _humanize_name(scenario_id))
         description = f"Fault scenario {scenario_id}"
         category = "unknown"
         severity = None
@@ -100,14 +113,15 @@ class ScenarioManager:
     # ------------------------------------------------------------------
 
     @property
-    def active_scenario(self) -> str | None:
-        return self._active
+    def active_scenarios(self) -> frozenset[str]:
+        """Return all scenario IDs currently applied to the cluster."""
+        return frozenset(self._active)
 
     def apply(self, scenario_id: str) -> str:
         """Apply the scenario's fault patch. Returns a fault description."""
-        if self._active is not None:
+        if scenario_id in self._active:
             raise ScenarioConflictError(
-                f"Scenario '{self._active}' is already applied — reset first"
+                f"Scenario '{scenario_id}' is already applied"
             )
         fault_path = self.scenarios_dir / scenario_id / "fault.yaml"
         if not fault_path.is_file():
@@ -120,7 +134,7 @@ class ScenarioManager:
             "patch", f"{kind}/{resource_name}", "-n", self.namespace,
             "--type", "strategic", "-p", patch,
         )
-        self._active = scenario_id
+        self._active.add(scenario_id)
         meta = self._ground_truth(scenario_id)
         return (meta or {}).get("description", f"Applied fault {scenario_id}")
 
@@ -139,7 +153,7 @@ class ScenarioManager:
             "rollout", "status", "deployment/demo-app",
             "-n", self.namespace, "--timeout=120s",
         )
-        self._active = None
+        self._active.clear()
 
     # ------------------------------------------------------------------
     # kubectl
@@ -148,7 +162,7 @@ class ScenarioManager:
     def check_connectivity(self) -> bool:
         try:
             result = subprocess.run(
-                [self.kubectl, "version", "--client=false"],
+                self._command("version", "--client=false"),
                 capture_output=True, text=True,
                 timeout=5,
             )
@@ -157,7 +171,7 @@ class ScenarioManager:
             return False
 
     def _run(self, *args: str) -> str:
-        cmd = [self.kubectl, *args]
+        cmd = self._command(*args)
         logger.info("Running: %s", " ".join(cmd)[:200])
         try:
             result = subprocess.run(

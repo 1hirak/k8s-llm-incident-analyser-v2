@@ -1,0 +1,13 @@
+{
+  "scenario_id": "11-failed-scheduling",
+  "name": "Failed Scheduling",
+  "description": "Pod is pinned to a node hostname that does not exist and remains Pending",
+  "true_root_cause": "The scheduler cannot find a node matching the requested hostname",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "resource",
+  "true_severity": "high",
+  "expected_log_patterns": ["FailedScheduling", "didn't match node selector", "Pending"],
+  "expected_event_reasons": ["FailedScheduling"],
+  "correct_remediation_keywords": ["nodeSelector", "node", "scheduling", "deployment"],
+  "notes": "The pod stays Pending until the invalid node selector is removed."
+}

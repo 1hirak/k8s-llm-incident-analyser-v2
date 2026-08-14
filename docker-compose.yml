@@ -5,7 +5,7 @@
 # topology is contracts/infra/docker-compose.yml — keep this file in sync
 # with it (only relative paths differ: contexts here are repo-root-relative).
 #
-#   docker compose up --build        # full stack
+#   make up                          # minikube + full Compose stack
 #   open http://localhost:3000       # frontend
 #   curl http://localhost:8000/health  # gateway
 # ============================================================================
@@ -23,6 +23,7 @@ services:
         # NEXT_PUBLIC_* vars are inlined at build time. Must be a
         # browser-reachable address (the gateway's published host port).
         NEXT_PUBLIC_API_URL: "http://localhost:8000"
+        NEXT_PUBLIC_API_TOKEN: "${NEXT_PUBLIC_API_TOKEN:-}"
         INTERNAL_API_URL: "http://gateway:8000"
     image: k8s-llm-frontend:latest
     container_name: frontend
@@ -30,7 +31,9 @@ services:
       - "3000:3000"
     environment:
       NEXT_PUBLIC_API_URL: "http://localhost:8000"
+      NEXT_PUBLIC_API_TOKEN: "${NEXT_PUBLIC_API_TOKEN:-}"
       INTERNAL_API_URL: "http://gateway:8000"
+      INTERNAL_API_TOKEN: "${GATEWAY_API_TOKEN:-}"
     depends_on:
       gateway:
         condition: service_healthy
@@ -55,6 +58,7 @@ services:
       SCENARIO_URL: "http://scenario:8006"
       LLM_URL: "http://llm:8004"
       COLLECTOR_URL: "http://collector:8002"
+      REMEDIATION_URL: "http://remediation:8008"
       RATE_LIMIT_PER_MINUTE: "60"
     depends_on:
       orchestrator:
@@ -62,6 +66,8 @@ services:
       reports:
         condition: service_healthy
       scenario:
+        condition: service_healthy
+      remediation:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -126,9 +132,13 @@ services:
     environment:
       KUBECTL_TIMEOUT: "30"
       KUBECTL_LOG_TAIL: "500"
+      KUBERNETES_AUTH_MODE: "${KUBERNETES_AUTH_MODE:-auto}"
+      KUBE_CONTEXT: "${KUBE_CONTEXT:-}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "control-plane.minikube.internal:host-gateway"
     volumes:
-      - ${HOME}/.kube/config:/root/.kube/config:ro
-      - ${HOME}/.minikube:${HOME}/.minikube:ro
+      - ./.runtime/kubeconfig:/root/.kube/config:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
       interval: 30s
@@ -179,8 +189,23 @@ services:
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       LLM_MODEL: "${LLM_MODEL:-}"
-      LLM_MAX_TOKENS: "${LLM_MAX_TOKENS:-2000}"
+      LLM_MAX_TOKENS: "${LLM_MAX_TOKENS:-4096}"
+      LLM_RETRY_MAX_TOKENS: "${LLM_RETRY_MAX_TOKENS:-8192}"
+      OPENROUTER_REASONING_EFFORT: "${OPENROUTER_REASONING_EFFORT:-}"
+      OPENROUTER_PROMPT_CACHE: "${OPENROUTER_PROMPT_CACHE:-true}"
+      OPENROUTER_RESPONSE_CACHE: "${OPENROUTER_RESPONSE_CACHE:-false}"
+      OPENROUTER_RETRY_DELAY_SECONDS: "${OPENROUTER_RETRY_DELAY_SECONDS:-2}"
+      REDIS_URL: "redis://redis:6379/0"
+      LLM_ANALYSIS_CACHE_ENABLED: "${LLM_ANALYSIS_CACHE_ENABLED:-true}"
+      LLM_ANALYSIS_CACHE_TTL: "${LLM_ANALYSIS_CACHE_TTL:-900}"
+      LLM_CONFIG_PATH: "/data/llm-config.json"
+    volumes:
+      - ./data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
       interval: 30s
@@ -232,13 +257,89 @@ services:
       SCENARIOS_DIR: "/k8s/scenarios"
       BASE_DIR: "/k8s/base"
       GROUND_TRUTH_DIR: "/evaluation/ground_truth"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "control-plane.minikube.internal:host-gateway"
     volumes:
-      - ${HOME}/.kube/config:/root/.kube/config:ro
-      - ${HOME}/.minikube:${HOME}/.minikube:ro
+      - ./.runtime/kubeconfig:/root/.kube/config:ro
       - ./k8s:/k8s:ro
       - ./evaluation:/evaluation:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - analyser-net
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Remediation Service (typed changes, disabled by default)
+  # --------------------------------------------------------------------------
+  remediation:
+    build:
+      context: .
+      dockerfile: services/remediation/Dockerfile
+    image: k8s-llm-remediation-svc:latest
+    container_name: remediation
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      REMEDIATION_ENABLED: "${REMEDIATION_ENABLED:-false}"
+      REMEDIATION_MODE: "approval"
+      REMEDIATION_NAMESPACES: "${REMEDIATION_NAMESPACES:-demo}"
+      KUBERNETES_AUTH_MODE: "${KUBERNETES_AUTH_MODE:-auto}"
+      KUBE_CONTEXT: "${KUBE_CONTEXT:-}"
+      KUBECTL_TIMEOUT: "120"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "control-plane.minikube.internal:host-gateway"
+    volumes:
+      - ./.runtime/kubeconfig:/root/.kube/config:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - analyser-net
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Watcher Service (read-only continuous unhealthy-pod detection)
+  # --------------------------------------------------------------------------
+  watcher:
+    build:
+      context: .
+      dockerfile: services/watcher/Dockerfile
+    image: k8s-llm-watcher-svc:latest
+    container_name: watcher
+    environment:
+      ORCHESTRATOR_URL: "http://orchestrator:8001"
+      REDIS_URL: "redis://redis:6379/0"
+      WATCHER_ENABLED: "${WATCHER_ENABLED:-true}"
+      WATCH_NAMESPACES: "${WATCH_NAMESPACES:-demo}"
+      WATCH_INTERVAL_SECONDS: "${WATCH_INTERVAL_SECONDS:-30}"
+      WATCH_COOLDOWN_SECONDS: "${WATCH_COOLDOWN_SECONDS:-900}"
+      WATCH_RESTART_THRESHOLD: "${WATCH_RESTART_THRESHOLD:-3}"
+      KUBERNETES_AUTH_MODE: "${KUBERNETES_AUTH_MODE:-auto}"
+      KUBE_CONTEXT: "${KUBE_CONTEXT:-}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "control-plane.minikube.internal:host-gateway"
+    volumes:
+      - ./.runtime/kubeconfig:/root/.kube/config:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      orchestrator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8007/health')"]
       interval: 30s
       timeout: 5s
       retries: 3

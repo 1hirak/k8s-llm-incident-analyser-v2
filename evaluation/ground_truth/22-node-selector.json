@@ -1,0 +1,13 @@
+{
+  "scenario_id": "22-node-selector",
+  "name": "Invalid Node Selector",
+  "description": "Pod requests a Windows node in the Linux demo cluster and remains Pending",
+  "true_root_cause": "No node matches the requested operating-system selector",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "resource",
+  "true_severity": "high",
+  "expected_log_patterns": ["FailedScheduling", "node selector", "Pending"],
+  "expected_event_reasons": ["FailedScheduling"],
+  "correct_remediation_keywords": ["nodeSelector", "kubernetes.io/os", "node", "deployment"],
+  "notes": "The pod stays Pending until the incompatible selector is removed."
+}

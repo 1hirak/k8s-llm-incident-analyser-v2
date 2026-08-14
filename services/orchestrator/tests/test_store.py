@@ -47,6 +47,13 @@ class TestCreate:
         queued = await fake_redis.lrange(JOB_QUEUE_KEY, 0, -1)
         assert job_id in queued
 
+    async def test_clear_queue_removes_all_pending_entries(self, store, fake_redis):
+        await store.create(new_id(), "demo", "one")
+        await store.create(new_id(), "demo", "two")
+
+        assert await store.clear_queue() == 2
+        assert await fake_redis.llen(JOB_QUEUE_KEY) == 0
+
 
 class TestTransitions:
     async def test_transition_updates_state(self, store):

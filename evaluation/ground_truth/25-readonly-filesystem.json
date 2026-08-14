@@ -1,0 +1,13 @@
+{
+  "scenario_id": "25-readonly-filesystem",
+  "name": "Read-only Filesystem",
+  "description": "Container root filesystem is read-only while startup attempts a write",
+  "true_root_cause": "Application startup requires a write but the container root filesystem is read-only",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "crash",
+  "true_severity": "high",
+  "expected_log_patterns": ["Read-only file system", "PermissionError", "startup"],
+  "expected_event_reasons": ["BackOff", "Failed"],
+  "correct_remediation_keywords": ["readOnlyRootFilesystem", "writable", "volume", "securityContext"],
+  "notes": "The demo application performs a controlled write during startup for this scenario."
+}

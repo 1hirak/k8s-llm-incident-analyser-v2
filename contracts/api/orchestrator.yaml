@@ -54,6 +54,11 @@ components:
         pod_name:
           type: string
           example: demo-app-abc123
+        target_kind:
+          $ref: 'gateway.yaml#/components/schemas/target_kind'
+        target_name:
+          type: string
+          nullable: true
         current_logs:
           type: string
           description: kubectl logs output (current container, --tail=500 --timestamps=true).
@@ -99,6 +104,17 @@ components:
           type: string
         pod_name:
           type: string
+        target_kind:
+          $ref: 'gateway.yaml#/components/schemas/target_kind'
+        target_name:
+          type: string
+          nullable: true
+        target_context:
+          type: string
+        pod_names:
+          type: array
+          items:
+            type: string
         current_logs:
           type: string
           description: Filtered current logs (noise removed, signal + context window).
@@ -128,6 +144,38 @@ tags:
   - name: Jobs
 
 paths:
+  /jobs/queue/clear:
+    post:
+      tags: [Jobs]
+      summary: Clear pending analysis queue entries
+      responses:
+        '200':
+          description: Number of queue entries removed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cleared]
+                properties:
+                  cleared:
+                    type: integer
+
+  /jobs/active/cancel:
+    post:
+      tags: [Jobs]
+      summary: Cancel all active analysis jobs
+      responses:
+        '200':
+          description: Number of active jobs cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cancelled]
+                properties:
+                  cancelled:
+                    type: integer
+
   /health:
     get:
       tags: [Health]
@@ -249,6 +297,33 @@ paths:
                 $ref: 'gateway.yaml#/components/schemas/job_state'
         '404':
           description: Job not found in Redis
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+  /jobs/{job_id}/cancel:
+    post:
+      tags: [Jobs]
+      summary: Cancel one active analysis job
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current terminal job state
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/job_state'
+        '404':
+          description: Job not found
           content:
             application/json:
               schema:

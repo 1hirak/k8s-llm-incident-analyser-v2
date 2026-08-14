@@ -51,7 +51,7 @@ class TestListScenarios:
         manager = make_manager()
         scenarios = manager.list_scenarios()
         ids = [s.scenario_id for s in scenarios]
-        assert len(ids) == 10
+        assert len(ids) == 25
         assert "05-oom" in ids
         assert ids == sorted(ids)
 
@@ -88,7 +88,7 @@ class TestApply:
         manager = make_manager()
         with patch("subprocess.run", return_value=ok_result()) as mock_run:
             desc = manager.apply("05-oom")
-        assert manager.active_scenario == "05-oom"
+        assert manager.active_scenarios == {"05-oom"}
         assert "memory" in desc.lower()
         cmd = mock_run.call_args[0][0]
         assert "patch" in cmd
@@ -100,19 +100,26 @@ class TestApply:
         with pytest.raises(ScenarioNotFoundError):
             manager.apply("99-nonexistent")
 
-    def test_apply_when_active_raises_conflict(self):
+    def test_apply_allows_multiple_different_scenarios(self):
+        manager = make_manager()
+        with patch("subprocess.run", return_value=ok_result()):
+            manager.apply("05-oom")
+            manager.apply("03-crashloop")
+        assert manager.active_scenarios == {"05-oom", "03-crashloop"}
+
+    def test_apply_same_scenario_twice_raises_conflict(self):
         manager = make_manager()
         with patch("subprocess.run", return_value=ok_result()):
             manager.apply("05-oom")
             with pytest.raises(ScenarioConflictError):
-                manager.apply("03-crashloop")
+                manager.apply("05-oom")
 
     def test_apply_kubectl_failure_raises(self):
         manager = make_manager()
         with patch("subprocess.run", return_value=err_result()):
             with pytest.raises(KubectlError):
                 manager.apply("05-oom")
-        assert manager.active_scenario is None
+        assert manager.active_scenarios == set()
 
 
 class TestReset:
@@ -121,7 +128,7 @@ class TestReset:
         with patch("subprocess.run", return_value=ok_result()) as mock_run:
             manager.apply("05-oom")
             manager.reset()
-        assert manager.active_scenario is None
+        assert manager.active_scenarios == set()
         cmds = [call[0][0] for call in mock_run.call_args_list]
         # delete deployment, apply base files, rollout status
         assert any("delete" in c and "deployment" in c for c in cmds)

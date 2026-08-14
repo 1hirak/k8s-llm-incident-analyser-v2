@@ -406,7 +406,7 @@ class TestProviderInfo:
         assert pi.available is False
 
     def test_all_provider_ids_accepted(self):
-        for pid in ["mock", "openai", "anthropic", "deepseek"]:
+        for pid in ["mock", "openai", "anthropic", "deepseek", "openrouter"]:
             pi = ProviderInfo(id=pid, name=pid, model="m", available=True)
             assert pi.id == pid
 

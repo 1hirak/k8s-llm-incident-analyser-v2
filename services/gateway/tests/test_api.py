@@ -44,6 +44,17 @@ class TestJobsProxy:
         assert body["status"] == 404
         assert body["title"] == "Not found"
 
+    def test_cancel_job(self, api_client):
+        resp = api_client.post(f"/api/jobs/{JOB_ID}/cancel")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "failed"
+        assert resp.json()["error"] == "Diagnosis cancelled by user"
+
+    def test_cancel_active_jobs(self, api_client):
+        resp = api_client.post("/api/jobs/active/cancel")
+        assert resp.status_code == 200
+        assert resp.json() == {"cancelled": 1}
+
 
 class TestJobsStreamProxy:
     def test_sse_stream_passthrough(self, api_client):
@@ -97,6 +108,70 @@ class TestScenariosProxy:
         resp = api_client.post("/api/scenarios/reset")
         assert resp.status_code == 200
         assert resp.json()["reset"] is True
+
+
+class TestSettingsProxy:
+    def test_get_settings(self, api_client):
+        resp = api_client.get("/api/settings")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "mock"
+        assert data["source"] == "env"
+        ids = {p["id"] for p in data["providers"]}
+        assert ids == {"mock", "openai", "anthropic", "deepseek", "openrouter"}
+
+    def test_save_settings(self, api_client):
+        resp = api_client.post(
+            "/api/settings",
+            json={"provider": "openai", "api_key": "sk-secret"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "openai"
+        assert data["source"] == "file"
+        assert "sk-secret" not in str(data)
+
+    def test_list_settings_providers(self, api_client):
+        resp = api_client.get("/api/settings/providers")
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        ids = {item["id"] for item in items}
+        assert ids == {"mock", "openai", "anthropic", "deepseek", "openrouter"}
+        openai_item = next(i for i in items if i["id"] == "openai")
+        assert openai_item["available"] is False
+
+
+class TestRemediationProxy:
+    def test_create_remediation(self, api_client):
+        resp = api_client.post(
+            "/api/remediations",
+            json={
+                "action": {
+                    "action_type": "rollout_restart",
+                    "namespace": "demo",
+                    "deployment_name": "demo-app",
+                }
+            },
+        )
+        assert resp.status_code == 201
+        assert resp.json()["status"] == "pending"
+
+
+class TestGatewayAuth:
+    def test_configured_token_rejects_missing_credentials(self, api_client, monkeypatch):
+        import app.main as main
+
+        monkeypatch.setattr(main, "GATEWAY_API_TOKEN", "test-token")
+        resp = api_client.get("/api/stats")
+        assert resp.status_code == 401
+        assert resp.json()["title"] == "Authentication required"
+
+    def test_configured_token_allows_health(self, api_client, monkeypatch):
+        import app.main as main
+
+        monkeypatch.setattr(main, "GATEWAY_API_TOKEN", "test-token")
+        resp = api_client.get("/health")
+        assert resp.status_code == 200
 
 
 class TestRateLimit:

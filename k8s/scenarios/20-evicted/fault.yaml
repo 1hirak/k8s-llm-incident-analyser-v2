@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app
+  namespace: demo
+spec:
+  template:
+    spec:
+      containers:
+      - name: demo-app
+        env:
+        - name: STORAGE_FAULT
+          value: "1"
+        resources:
+          requests:
+            ephemeral-storage: "8Mi"
+          limits:
+            ephemeral-storage: "16Mi"

@@ -60,6 +60,8 @@ components:
         pod_name:
           type: string
           example: demo-app-abc123
+        target_kind:
+          $ref: 'gateway.yaml#/components/schemas/target_kind'
         job_id:
           type: string
           format: uuid
@@ -94,6 +96,8 @@ components:
           type: string
         pod_name:
           type: string
+        target_kind:
+          $ref: 'gateway.yaml#/components/schemas/target_kind'
         status:
           $ref: 'gateway.yaml#/components/schemas/job_status_enum'
         stage:

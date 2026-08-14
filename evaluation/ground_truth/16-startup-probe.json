@@ -1,0 +1,13 @@
+{
+  "scenario_id": "16-startup-probe",
+  "name": "Startup Probe Failed",
+  "description": "Startup probe calls missing /startup endpoint and never succeeds",
+  "true_root_cause": "The startup probe path is invalid and returns HTTP 404",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "probe",
+  "true_severity": "high",
+  "expected_log_patterns": ["startup probe failed", "404", "startup"],
+  "expected_event_reasons": ["Unhealthy", "StartupProbeFailed"],
+  "correct_remediation_keywords": ["startup probe", "path", "probe", "deployment"],
+  "notes": "Readiness and liveness checks are held behind the failing startup probe."
+}

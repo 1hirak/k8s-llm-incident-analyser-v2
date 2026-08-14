@@ -61,7 +61,7 @@ class TestListScenarios:
         resp = client.get("/scenarios")
         assert resp.status_code == 200
         items = resp.json()["items"]
-        assert len(items) == 10
+        assert len(items) == 25
         ids = [i["scenario_id"] for i in items]
         assert "05-oom" in ids
         oom = next(i for i in items if i["scenario_id"] == "05-oom")
@@ -69,9 +69,9 @@ class TestListScenarios:
         assert oom["severity"] == "high"
         assert oom["description"]
 
-    def test_all_10_scenarios_returned(self):
+    def test_all_25_scenarios_returned(self):
         resp = client.get("/scenarios")
-        assert len(resp.json()["items"]) == 10
+        assert len(resp.json()["items"]) == 25
 
     def test_each_scenario_has_required_fields(self):
         resp = client.get("/scenarios")
@@ -105,15 +105,23 @@ class TestApplyScenario:
         body = resp.json()
         assert body["status"] == 404
 
-    def test_apply_conflict_returns_409(self):
+    def test_apply_multiple_scenarios(self):
+        self._patch_connectivity()
+        with patch("subprocess.run", return_value=ok_result()):
+            first = client.post("/scenarios/05-oom/apply")
+            second = client.post("/scenarios/03-crashloop/apply")
+        assert first.status_code == 200
+        assert second.status_code == 200
+
+    def test_apply_duplicate_returns_409(self):
         self._patch_connectivity()
         with patch("subprocess.run", return_value=ok_result()):
             client.post("/scenarios/05-oom/apply")
-            resp = client.post("/scenarios/03-crashloop/apply")
+            resp = client.post("/scenarios/05-oom/apply")
         assert resp.status_code == 409
         body = resp.json()
         assert body["status"] == 409
-        assert "reset" in body["detail"].lower()
+        assert "already applied" in body["detail"].lower()
 
     def test_apply_with_cluster_unreachable(self):
         manager = _manager()
@@ -147,7 +155,7 @@ class TestReset:
             resp = client.post("/scenarios/reset")
         assert resp.status_code == 200
         assert resp.json()["reset"] is True
-        assert _manager().active_scenario is None
+        assert _manager().active_scenarios == frozenset()
 
     def test_reset_when_no_scenario_active(self):
         self._patch_connectivity()

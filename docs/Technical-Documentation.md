@@ -1,7 +1,7 @@
 # K8s LLM Incident Analyser — Technical Documentation (A to Z)
 
 > **Current architecture (v2 microservices).** This document is the
-> exhaustive reference manual for the microservices platform: seven FastAPI
+> exhaustive reference manual for the microservices platform: nine FastAPI
 > services, Redis, SQLite, and a Next.js dashboard. For the narrative
 > "why" guide see [`DEEP-DIVE.md`](./DEEP-DIVE.md); for the 10-minute brief
 > see [`architecture.md`](./architecture.md); for the authoritative specs
@@ -188,6 +188,8 @@ flowchart TD
 | llm | 8004 | Provider integrations + prompt building + output validation; holds all external API keys | — | OpenAI / Anthropic / DeepSeek APIs |
 | reports | 8005 | Owns SQLite (single writer, WAL); reports + job snapshots; dashboard stats | SQLite | none |
 | scenario | 8006 | Lists/applies/resets fault scenarios via kubectl strategic-merge patch; tracks active scenario (409 on conflict) | in-memory | kube-apiserver (write) |
+| watcher | 8007 | Read-only namespace-scoped unhealthy-pod scanner; deduplicates and submits jobs | Redis cooldown keys | kube-apiserver (read) |
+| remediation | 8008 | Typed server-side dry-run and explicit operator-approved Deployment changes | Redis proposals | kube-apiserver (write) |
 | frontend | 3000 | Next.js 15 dashboard (App Router, Tailwind v4, shadcn/ui) | — | gateway only |
 
 ### Trust Boundaries and Security Model
@@ -196,7 +198,10 @@ flowchart TD
 2. **Secrets flow one way.** `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` exist only in llm-svc's environment. Evidence is redacted by processor-svc *before* llm-svc (and therefore any vendor) sees it.
 3. **Cluster access is split by least privilege.** collector-svc runs with a read-only ClusterRole (pods, pods/log, events — get/list/watch). scenario-svc runs with a Role scoped to the `demo` namespace (patch on deployments/services/configmaps; no delete). No other service has any cluster credentials.
 4. **Database ownership.** reports-svc is the single writer to the SQLite file; every other service goes through its HTTP API. Redis is owned by orchestrator-svc.
-5. **No authentication in v1.** The public API is open with permissive CORS — acceptable for a dissertation artefact on a private network, explicitly listed as a limitation ([Section 27](#27-limitations--future-roadmap)).
+5. **Authentication is deployment-configured.** Development may leave
+   `GATEWAY_API_TOKEN` empty, while external-cluster deployments require a
+   Bearer token and restricted CORS origins. OIDC and TLS at an ingress remain
+   recommended for production.
 
 ### Key Design Decisions and Their Trade-offs
 
@@ -2236,7 +2241,7 @@ kubectl apply -k k8s/overlays/production/
 
 **Does the LLM see my secrets?** No. The processor service redacts API keys, passwords, tokens, and connection strings *before* evidence reaches the LLM provider.
 
-**Can it modify my production workloads?** No. The collector is read-only (`get/list/watch` only). The scenario service only patches a designated test namespace (default: `demo`).
+**Can it modify my production workloads?** Only when remediation is explicitly enabled and an authenticated operator approves a typed action after a server-side dry-run. The collector and watcher remain read-only; the scenario service is test-only.
 
 **What if my cluster has no outbound internet?** Only the LLM service calls external APIs. For air-gapped clusters, swap to a local LLM (Ollama/vLLM) behind the same `/analyse` endpoint.
 

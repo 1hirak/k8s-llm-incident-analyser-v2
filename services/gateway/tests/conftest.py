@@ -7,9 +7,12 @@ os.environ.update(
         "REPORTS_URL": "http://reports:8005",
         "SCENARIO_URL": "http://scenario:8006",
         "LLM_URL": "http://llm:8004",
+        "REMEDIATION_URL": "http://remediation:8008",
         "RATE_LIMIT_PER_MINUTE": "60",
     }
 )
+
+import json
 
 import httpx
 import pytest
@@ -82,6 +85,13 @@ def upstream_handler(request: httpx.Request) -> httpx.Response:
             )
         if path == f"/jobs/{JOB_ID}":
             return httpx.Response(200, json=JOB_STATE)
+        if path == f"/jobs/{JOB_ID}/cancel" and request.method == "POST":
+            return httpx.Response(
+                200,
+                json={**JOB_STATE, "status": "failed", "error": "Diagnosis cancelled by user"},
+            )
+        if path == "/jobs/active/cancel" and request.method == "POST":
+            return httpx.Response(200, json={"cancelled": 1})
         if path.startswith("/jobs/"):
             return httpx.Response(
                 404,
@@ -160,18 +170,144 @@ def upstream_handler(request: httpx.Request) -> httpx.Response:
         if path == "/scenarios/reset" and request.method == "POST":
             return httpx.Response(200, json={"reset": True})
 
+    # remediation-svc
+    if host == "remediation":
+        if path == "/remediations" and request.method == "POST":
+            return httpx.Response(
+                201,
+                json={
+                    "remediation_id": INCIDENT_ID,
+                    "action": {
+                        "action_type": "rollout_restart",
+                        "namespace": "demo",
+                        "deployment_name": "demo-app",
+                    },
+                    "status": "pending",
+                    "requested_by": "operator",
+                    "approved_by": None,
+                    "dry_run_output": "deployment/demo-app",
+                    "result": "",
+                    "error": None,
+                    "created_at": "2026-07-21T10:05:33Z",
+                    "updated_at": "2026-07-21T10:05:33Z",
+                },
+            )
+
     # llm-svc
-    if host == "llm" and path == "/health":
-        return httpx.Response(
-            200,
-            json={
-                "status": "ok",
-                "service": "llm-svc",
-                "version": "0.1.0",
-                "provider": "mock",
-                "model": "(none)",
-            },
-        )
+    if host == "llm":
+        if path == "/health":
+            return httpx.Response(
+                200,
+                json={
+                    "status": "ok",
+                    "service": "llm-svc",
+                    "version": "0.1.0",
+                    "provider": "mock",
+                    "model": "(none)",
+                },
+            )
+        if path == "/config" and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "provider": "mock",
+                    "model": None,
+                    "source": "env",
+                    "providers": [
+                        {
+                            "id": "mock",
+                            "name": "Mock (heuristic)",
+                            "model": "(none)",
+                            "available": True,
+                        },
+                        {
+                            "id": "openai",
+                            "name": "OpenAI",
+                            "model": "gpt-4o-mini",
+                            "available": False,
+                        },
+                        {
+                            "id": "anthropic",
+                            "name": "Anthropic",
+                            "model": "claude-haiku-4-5-20251001",
+                            "available": False,
+                        },
+                        {
+                            "id": "deepseek",
+                            "name": "DeepSeek",
+                            "model": "deepseek-chat",
+                            "available": True,
+                        },
+                        {
+                            "id": "openrouter",
+                            "name": "OpenRouter",
+                            "model": "openrouter/free",
+                            "available": False,
+                        },
+                    ],
+                },
+            )
+        if path == "/config" and request.method == "POST":
+            try:
+                body = json.loads(request.content) if request.content else {}
+            except ValueError:
+                body = {}
+            provider = body.get("provider", "mock")
+            return httpx.Response(
+                200,
+                json={
+                    "provider": provider,
+                    "model": body.get("model"),
+                    "source": "file",
+                    "providers": [
+                        {
+                            "id": pid,
+                            "name": pid,
+                            "model": "(none)",
+                            "available": pid in ("mock", provider),
+                        }
+                         for pid in ("mock", "openai", "anthropic", "deepseek", "openrouter")
+                    ],
+                },
+            )
+        if path == "/providers":
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "id": "mock",
+                            "name": "Mock (heuristic)",
+                            "model": "(none)",
+                            "available": True,
+                        },
+                        {
+                            "id": "openai",
+                            "name": "OpenAI",
+                            "model": "gpt-4o-mini",
+                            "available": False,
+                        },
+                        {
+                            "id": "anthropic",
+                            "name": "Anthropic",
+                            "model": "claude-haiku-4-5-20251001",
+                            "available": False,
+                        },
+                        {
+                            "id": "deepseek",
+                            "name": "DeepSeek",
+                            "model": "deepseek-chat",
+                            "available": True,
+                        },
+                        {
+                            "id": "openrouter",
+                            "name": "OpenRouter",
+                            "model": "openrouter/free",
+                            "available": False,
+                        },
+                    ]
+                },
+            )
 
     return httpx.Response(404, json={"detail": f"no route {host}{path}"})
 

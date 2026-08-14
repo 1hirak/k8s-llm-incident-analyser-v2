@@ -127,7 +127,7 @@ export default function ReportsPage() {
     <>
       <PageHeader
         title="Reports"
-        description="Persisted incident reports from the analysis pipeline"
+        description="Completed diagnosis records — the historical record of every diagnosed incident"
       >
         <Button
           variant="outline"
@@ -225,7 +225,7 @@ export default function ReportsPage() {
             </Button>
           ) : (
             <Button asChild>
-              <Link href="/analyse">Run an analysis</Link>
+              <Link href="/errors">Diagnose an error</Link>
             </Button>
           )}
         </EmptyState>

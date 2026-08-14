@@ -1,0 +1,13 @@
+{
+  "scenario_id": "18-service-no-endpoints",
+  "name": "Service Has No Endpoints",
+  "description": "Service selector no longer matches the demo pod, leaving the Service without endpoints",
+  "true_root_cause": "The Service selector does not match any running pod labels",
+  "true_affected_component": "demo-app-svc",
+  "true_failure_category": "network",
+  "true_severity": "high",
+  "expected_log_patterns": ["no endpoints", "Endpoints", "selector"],
+  "expected_event_reasons": [],
+  "correct_remediation_keywords": ["selector", "labels", "endpoints", "Service"],
+  "notes": "The pod remains healthy; diagnosis requires inspecting the Service and EndpointSlices."
+}

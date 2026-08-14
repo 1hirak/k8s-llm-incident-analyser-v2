@@ -15,7 +15,7 @@ it to an LLM with a strict JSON schema, and returns a structured
 `IncidentReport` containing the likely root cause, supporting evidence,
 and suggested remediation.
 
-The system is a **microservices platform**: seven FastAPI services, Redis,
+The system is a **microservices platform**: nine FastAPI services, Redis,
 SQLite, and a Next.js dashboard — defined contract-first in
 [`contracts/`](../contracts/README.md), the Single Source of Truth (SSOT)
 for every API, schema, and topology decision.
@@ -61,11 +61,18 @@ for every API, schema, and topology decision.
 | llm          | 8004 | Provider integrations + prompt building + structured-output validation; holds all external API keys | — |
 | reports      | 8005 | Owns SQLite (single writer, WAL); reports + job snapshots; dashboard stats | SQLite |
 | scenario     | 8006 | Lists/applies/resets fault scenarios via kubectl strategic-merge patch; tracks active scenario (409 on conflict) | in-memory |
+| watcher      | 8007 | Read-only namespace-scoped unhealthy-pod scanner; deduplicates and submits jobs | Redis cooldown keys |
+| remediation  | 8008 | Typed server-side dry-run and explicit operator-approved Deployment changes | Redis proposals |
 | frontend     | 3000 | Next.js 15 dashboard (App Router, Tailwind v4, shadcn/ui) | — |
 
 Internal services are **not** exposed publicly; the frontend only talks to
 the gateway. All inter-service calls are REST (contracts/api/*.yaml);
 gRPC and message-queue migration are deliberate v2 deferrals.
+
+The watcher is the continuous trigger for external-cluster deployments. The
+remediation service is disabled by default and never executes free-form LLM
+commands; it accepts only typed actions, performs a server-side dry-run, and
+requires an authenticated approval before applying a patch.
 
 ## The Analysis Lifecycle
 

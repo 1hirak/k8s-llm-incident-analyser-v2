@@ -2,6 +2,8 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 
@@ -21,6 +23,20 @@ async def lifespan(app: FastAPI):
     if not db_url:
         logger.error("FATAL: DATABASE_URL environment variable is not set")
         raise RuntimeError("Missing required configuration: DATABASE_URL")
+    db_host = urlparse(db_url).hostname or ""
+    if db_host.endswith(".invalid"):
+        logger.error("FATAL: database DNS lookup failed for %s", db_host)
+        raise RuntimeError(
+            f"Database DNS resolution failed: no such host {db_host}"
+        )
+    if os.environ.get("STORAGE_FAULT") == "1":
+        logger.warning("Ephemeral storage stress test starting...")
+        Path("/tmp/demo-storage-fault").write_bytes(
+            b"0" * (32 * 1024 * 1024)
+        )
+    if os.environ.get("READ_ONLY_FS_FAULT") == "1":
+        logger.warning("Read-only filesystem write test starting...")
+        Path("runtime-check.txt").write_text("filesystem check")
     logger.info("Demo app starting. DATABASE_URL=%s...", db_url[:20])
     yield
     logger.info("Demo app shutting down")

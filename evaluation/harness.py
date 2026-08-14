@@ -42,6 +42,21 @@ SCENARIOS = [
     "08-bad-configmap",
     "09-app-exception",
     "10-wrong-port",
+    "11-failed-scheduling",
+    "12-insufficient-memory",
+    "13-insufficient-cpu",
+    "14-missing-configmap",
+    "15-missing-secret",
+    "16-startup-probe",
+    "17-failed-mount",
+    "18-service-no-endpoints",
+    "19-dns-failure",
+    "20-evicted",
+    "21-cpu-throttling",
+    "22-node-selector",
+    "23-invalid-image-pull-secret",
+    "24-missing-service-account",
+    "25-readonly-filesystem",
 ]
 
 DEFAULT_GT_DIR = Path(__file__).parent / "ground_truth"

@@ -33,6 +33,16 @@ spec:
               value: "http://scenario:8006"
             - name: LLM_URL
               value: "http://llm:8004"
+            - name: REMEDIATION_URL
+              value: "http://remediation:8008"
+            - name: GATEWAY_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-auth
+                  key: API_TOKEN
+                  optional: true
+            - name: CORS_ALLOW_ORIGINS
+              value: "http://localhost:3000"
             - name: RATE_LIMIT_PER_MINUTE
               value: "60"
           readinessProbe:

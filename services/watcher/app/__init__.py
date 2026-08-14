@@ -1,0 +1,1 @@
+"""Continuous Kubernetes incident watcher."""

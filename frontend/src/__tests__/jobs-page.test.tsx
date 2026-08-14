@@ -23,7 +23,7 @@ describe("JobsPage", () => {
   it("renders page header", async () => {
     const { default: JobsPage } = await import("@/app/jobs/page");
     render(<JobsPage />);
-    expect(await screen.findByText("Jobs")).toBeInTheDocument();
+    expect(await screen.findByText("Activity")).toBeInTheDocument();
   });
 
   it("renders job row", async () => {

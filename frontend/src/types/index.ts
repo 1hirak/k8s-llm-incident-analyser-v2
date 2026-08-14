@@ -5,10 +5,20 @@ export type FailureCategory = components["schemas"]["failure_category"];
 export type Severity = components["schemas"]["severity"];
 export type JobStatus = components["schemas"]["job_status_enum"];
 export type EvidenceSource = components["schemas"]["evidence_source"];
+export type TargetKind = components["schemas"]["target_kind"];
+export type TargetOption = components["schemas"]["target_option"];
 
 // Core domain models
 export type EvidenceItem = components["schemas"]["evidence_item"];
+export type AnalysisExplanation = components["schemas"]["analysis_explanation"];
+export type AnalysisInputSummary = components["schemas"]["analysis_input_summary"];
 export type IncidentReport = components["schemas"]["incident_report"];
+export type RemediationAction = components["schemas"]["remediation_action"];
+export type RemediationApprovalRequest =
+  components["schemas"]["remediation_approval_request"];
+export type RemediationCreateRequest =
+  components["schemas"]["remediation_create_request"];
+export type RemediationRecord = components["schemas"]["remediation_record"];
 export type ReportSummary = components["schemas"]["report_summary"];
 
 // Job models
@@ -37,6 +47,20 @@ export type HealthResponse = components["schemas"]["health_response"] & {
   cluster?: string | null;
 };
 
+// Settings (LLM provider configuration)
+export type ProviderInfo = components["schemas"]["provider_info"];
+export type ProviderConfigRequest =
+  components["schemas"]["provider_config_request"];
+export type LLMConfigStatus = components["schemas"]["llm_config_status"];
+
+export interface ProviderListResponse {
+  items: ProviderInfo[];
+}
+
+export interface TargetListResponse {
+  items: TargetOption[];
+}
+
 // RFC 7807 Problem Details
 export type ProblemDetails = components["schemas"]["error"];
 
@@ -60,3 +84,9 @@ export interface ResetResponse {
 }
 
 export type StatsRange = "24h" | "7d" | "30d";
+
+// Error queue (frontend-only persistence)
+export type {
+  ErrorQueueItem,
+  ErrorQueueItemStatus,
+} from "@/lib/error-queue";

@@ -1,0 +1,13 @@
+{
+  "scenario_id": "19-dns-failure",
+  "name": "Dependency DNS Failure",
+  "description": "Application startup resolves database.invalid and fails DNS lookup",
+  "true_root_cause": "The configured database hostname cannot be resolved by cluster DNS",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "dependency",
+  "true_severity": "high",
+  "expected_log_patterns": ["DNS", "no such host", "database"],
+  "expected_event_reasons": ["BackOff", "Failed"],
+  "correct_remediation_keywords": ["DATABASE_URL", "DNS", "hostname", "Service"],
+  "notes": "The demo application intentionally validates this hostname during startup."
+}

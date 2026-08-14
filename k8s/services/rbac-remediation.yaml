@@ -1,0 +1,53 @@
+# ==========================================================================
+# RBAC for remediation-svc
+#
+# This default binding is intentionally limited to the demo namespace. A
+# production installation should create one equivalent RoleBinding per
+# explicitly approved target namespace rather than granting cluster-wide
+# mutation access.
+# ==========================================================================
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: remediation-sa
+  namespace: analyser
+  labels:
+    app.kubernetes.io/name: remediation-svc
+    app.kubernetes.io/component: platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployment-remediator
+  namespace: demo
+  labels:
+    app.kubernetes.io/name: remediation-svc
+    app.kubernetes.io/component: platform
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/status", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: remediation-deployment-patcher
+  namespace: demo
+  labels:
+    app.kubernetes.io/name: remediation-svc
+    app.kubernetes.io/component: platform
+subjects:
+  - kind: ServiceAccount
+    name: remediation-sa
+    namespace: analyser
+roleRef:
+  kind: Role
+  name: deployment-remediator
+  apiGroup: rbac.authorization.k8s.io

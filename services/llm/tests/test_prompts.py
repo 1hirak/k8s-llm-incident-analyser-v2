@@ -1,5 +1,5 @@
 from app.prompts import build_prompt
-from k8s_llm_shared import EvidencePackage, IncidentReport
+from k8s_llm_shared import EvidencePackage
 
 
 class TestBuildPrompt:
@@ -27,6 +27,8 @@ class TestBuildPrompt:
         assert "Only use evidence that is present" in system
         assert "valid JSON object" in system
         assert "Never recommend automated remediation" in system
+        assert "hidden chain-of-thought" in system
+        assert "analysis_explanation" in system
 
     def test_user_prompt_contains_evidence_fields(self):
         pkg = self._make_package()
@@ -36,11 +38,11 @@ class TestBuildPrompt:
         assert "ERROR Missing DATABASE_URL" in user
         assert "CrashLoopBackOff" in user
 
-    def test_user_prompt_contains_json_schema(self):
+    def test_user_prompt_does_not_duplicate_json_schema(self):
         system, user = build_prompt(self._make_package())
-        assert "incident_summary" in user
-        assert "likely_root_cause" in user
-        assert "failure_category" in user
+        assert "incident_summary" not in user
+        assert "likely_root_cause" not in user
+        assert "failure_category" not in user
 
     def test_user_prompt_empty_logs_handled(self):
         pkg = self._make_package(current_logs="", previous_logs="(none)")
@@ -52,11 +54,10 @@ class TestBuildPrompt:
         system, user = build_prompt(pkg)
         assert "5" in user
 
-    def test_json_schema_in_prompt_matches_model(self):
-        schema = IncidentReport.model_json_schema()
+    def test_system_prompt_is_stable_for_cache(self):
         system, user = build_prompt(self._make_package())
-        assert schema["title"] in user or "IncidentReport" in user
-        assert "incident_summary" in user
+        assert "incident_summary" not in user
+        assert "Collection Time:" not in user
 
     def test_system_prompt_consistent(self):
         s1, _ = build_prompt(self._make_package(namespace="ns1"))
@@ -83,20 +84,15 @@ class TestBuildPrompt:
         system, user = build_prompt(pkg)
         assert "no previous logs" in user
 
-    def test_user_prompt_has_timestamp(self):
-        from datetime import datetime, timezone
-
+    def test_json_schema_fields_are_added_by_provider(self):
         system, user = build_prompt(self._make_package())
-        assert datetime.now(timezone.utc).strftime("%Y-%m-%d") in user
-
-    def test_json_schema_contains_required_fields(self):
-        system, user = build_prompt(self._make_package())
-        assert "failure_category" in user
-        assert "severity" in user
-        assert "confidence" in user
-        assert "supporting_evidence" in user
-        assert "recommended_commands" in user
-        assert "human_verification_steps" in user
+        assert "failure_category" not in user
+        assert "severity" not in user
+        assert "confidence" not in user
+        assert "supporting_evidence" not in user
+        assert "recommended_commands" not in user
+        assert "human_verification_steps" not in user
+        assert "uncertainty" not in user
 
     def test_build_prompt_handles_zero_restart_count(self):
         pkg = self._make_package(restart_count=0)

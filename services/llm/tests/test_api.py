@@ -36,12 +36,12 @@ class TestHealth:
 
 
 class TestProviders:
-    def test_lists_all_four_providers(self):
+    def test_lists_all_providers(self):
         resp = client.get("/providers")
         assert resp.status_code == 200
         items = resp.json()["items"]
         ids = {item["id"] for item in items}
-        assert ids == {"mock", "openai", "anthropic", "deepseek"}
+        assert ids == {"mock", "openai", "anthropic", "deepseek", "openrouter"}
 
     def test_mock_always_available(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -70,6 +70,12 @@ class TestAnalyse:
         assert data["created_at"]
         assert len(data["supporting_evidence"]) >= 1
         assert 0.0 <= data["confidence"] <= 1.0
+        explanation = data["analysis_explanation"]
+        assert explanation["rationale"]
+        assert explanation["key_signals"]
+        assert explanation["uncertainty"]
+        assert explanation["input_summary"]["current_log_lines"] == 1
+        assert explanation["input_summary"]["redaction_applied"] is True
 
     def test_analyse_invalid_body_returns_400(self):
         resp = client.post("/analyse", json={"namespace": "demo"})
@@ -91,6 +97,105 @@ class TestAnalyse:
         body = resp.json()
         assert body["status"] == 500
         assert "type" in body
+
+    def test_analyse_missing_api_key_returns_500_config_error(
+        self, evidence_package
+    ):
+        with patch.dict(
+            os.environ,
+            {"LLM_PROVIDER": "deepseek"},
+            clear=True,
+        ):
+            resp = client.post("/analyse", json=evidence_package)
+        assert resp.status_code == 500
+        body = resp.json()
+        assert body["status"] == 500
+        assert "DEEPSEEK_API_KEY" in body["detail"]
+
+    def test_analyse_truncation_returns_502(self, evidence_package):
+        from app.llm import deepseek_provider as ds_mod
+
+        async def fake_analyse(self, package):
+            from app.llm.errors import LLMTruncationError
+            raise LLMTruncationError(
+                "DeepSeek returned truncated JSON (finish_reason=length)"
+            )
+
+        with patch.dict(
+            os.environ,
+            {"LLM_PROVIDER": "deepseek", "DEEPSEEK_API_KEY": "test-key"},
+            clear=True,
+        ):
+            with patch.object(
+                ds_mod.DeepSeekProvider, "analyse", fake_analyse
+            ):
+                resp = client.post("/analyse", json=evidence_package)
+        assert resp.status_code == 502
+        body = resp.json()
+        assert body["status"] == 502
+        assert "finish_reason=length" in body["detail"]
+
+    def test_analyse_rate_limit_returns_429(self, evidence_package):
+        from app.llm import deepseek_provider as ds_mod
+
+        async def fake_analyse(self, package):
+            from app.llm.errors import LLMRateLimitError
+            raise LLMRateLimitError("DeepSeek rate limit hit: slow down")
+
+        with patch.dict(
+            os.environ,
+            {"LLM_PROVIDER": "deepseek", "DEEPSEEK_API_KEY": "test-key"},
+            clear=True,
+        ):
+            with patch.object(
+                ds_mod.DeepSeekProvider, "analyse", fake_analyse
+            ):
+                resp = client.post("/analyse", json=evidence_package)
+        assert resp.status_code == 429
+        body = resp.json()
+        assert body["status"] == 429
+
+    def test_analyse_unavailable_returns_503(self, evidence_package):
+        from app.llm import deepseek_provider as ds_mod
+
+        async def fake_analyse(self, package):
+            from app.llm.errors import LLMUnavailableError
+            raise LLMUnavailableError("DeepSeek returned 502: down")
+
+        with patch.dict(
+            os.environ,
+            {"LLM_PROVIDER": "deepseek", "DEEPSEEK_API_KEY": "test-key"},
+            clear=True,
+        ):
+            with patch.object(
+                ds_mod.DeepSeekProvider, "analyse", fake_analyse
+            ):
+                resp = client.post("/analyse", json=evidence_package)
+        assert resp.status_code == 503
+        body = resp.json()
+        assert body["status"] == 503
+
+    def test_analyse_invalid_output_returns_502(self, evidence_package):
+        from app.llm import deepseek_provider as ds_mod
+
+        async def fake_analyse(self, package):
+            from app.llm.errors import LLMInvalidOutputError
+            raise LLMInvalidOutputError(
+                "DeepSeek returned non-JSON output (finish_reason=stop)"
+            )
+
+        with patch.dict(
+            os.environ,
+            {"LLM_PROVIDER": "deepseek", "DEEPSEEK_API_KEY": "test-key"},
+            clear=True,
+        ):
+            with patch.object(
+                ds_mod.DeepSeekProvider, "analyse", fake_analyse
+            ):
+                resp = client.post("/analyse", json=evidence_package)
+        assert resp.status_code == 502
+        body = resp.json()
+        assert body["status"] == 502
 
     def test_analyse_unknown_provider_falls_back_to_mock(
         self, evidence_package

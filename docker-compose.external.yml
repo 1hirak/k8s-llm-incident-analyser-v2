@@ -1,0 +1,105 @@
+# Compose deployment for a target cluster outside Docker.
+#
+# Usage:
+#   cp .env.external.example .env.external
+#   # edit KUBECONFIG_FILE, namespaces, auth, and LLM settings
+#   docker compose -f docker-compose.yml -f docker-compose.external.yml \
+#     --env-file .env.external up --build -d
+#
+# This overlay removes the demo workload and scenario service, mounts the
+# explicitly selected kubeconfig at a neutral path, and keeps internal service
+# ports private. The target kubeconfig is never copied into an image.
+
+services:
+  frontend:
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL:-http://localhost:8000}"
+        NEXT_PUBLIC_API_TOKEN: "${NEXT_PUBLIC_API_TOKEN:?NEXT_PUBLIC_API_TOKEN is required}"
+    environment:
+      NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL:-http://localhost:8000}"
+      NEXT_PUBLIC_API_TOKEN: "${NEXT_PUBLIC_API_TOKEN:?NEXT_PUBLIC_API_TOKEN is required}"
+      INTERNAL_API_TOKEN: "${GATEWAY_API_TOKEN:?GATEWAY_API_TOKEN is required}"
+    ports:
+      - "3000:3000"
+
+  gateway:
+    environment:
+      GATEWAY_API_TOKEN: "${GATEWAY_API_TOKEN:?GATEWAY_API_TOKEN is required}"
+      CORS_ALLOW_ORIGINS: "${CORS_ALLOW_ORIGINS:-http://localhost:3000}"
+    depends_on: !reset
+      orchestrator:
+        condition: service_healthy
+      reports:
+        condition: service_healthy
+      remediation:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  orchestrator:
+    ports: !reset []
+
+  collector:
+    volumes: !reset
+      - "${KUBECONFIG_FILE:?KUBECONFIG_FILE is required}:/run/secrets/target-kubeconfig:ro"
+    environment:
+      KUBERNETES_AUTH_MODE: external
+      KUBECONFIG: /run/secrets/target-kubeconfig
+      KUBE_CONTEXT: "${KUBE_CONTEXT:-}"
+    ports: !reset []
+
+  processor:
+    ports: !reset []
+
+  llm:
+    environment:
+      LLM_PROVIDER: "${LLM_PROVIDER:-mock}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      LLM_MODEL: "${LLM_MODEL:-}"
+    ports: !reset []
+
+  reports:
+    ports: !reset []
+
+  scenario:
+    profiles: [demo]
+    ports: !reset []
+
+  remediation:
+    environment:
+      REMEDIATION_ENABLED: "${REMEDIATION_ENABLED:-true}"
+      REMEDIATION_MODE: approval
+      REMEDIATION_NAMESPACES: "${REMEDIATION_NAMESPACES:?REMEDIATION_NAMESPACES is required}"
+      KUBERNETES_AUTH_MODE: external
+      KUBECONFIG: /run/secrets/target-kubeconfig
+      KUBE_CONTEXT: "${KUBE_CONTEXT:-}"
+    volumes: !reset
+      - "${REMEDIATION_KUBECONFIG_FILE:?REMEDIATION_KUBECONFIG_FILE is required}:/run/secrets/target-kubeconfig:ro"
+    ports: !reset []
+
+  watcher:
+    environment:
+      WATCHER_ENABLED: "${WATCHER_ENABLED:-true}"
+      WATCH_NAMESPACES: "${WATCH_NAMESPACES:?WATCH_NAMESPACES is required}"
+      WATCH_INTERVAL_SECONDS: "${WATCH_INTERVAL_SECONDS:-30}"
+      WATCH_COOLDOWN_SECONDS: "${WATCH_COOLDOWN_SECONDS:-900}"
+      WATCH_RESTART_THRESHOLD: "${WATCH_RESTART_THRESHOLD:-3}"
+      KUBERNETES_AUTH_MODE: external
+      KUBECONFIG: /run/secrets/target-kubeconfig
+      KUBE_CONTEXT: "${KUBE_CONTEXT:-}"
+    volumes: !reset
+      - "${KUBECONFIG_FILE:?KUBECONFIG_FILE is required}:/run/secrets/target-kubeconfig:ro"
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  demo-app:
+    profiles: [demo]
+
+  db:
+    profiles: [demo]

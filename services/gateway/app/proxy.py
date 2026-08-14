@@ -50,12 +50,21 @@ async def proxy_request(
     url = f"{base_url}{path}"
     body = await request.body()
     try:
+        forward_headers = {
+            "content-type": request.headers.get(
+                "content-type", "application/json"
+            )
+        }
+        for header in ("authorization", "x-operator-id"):
+            value = request.headers.get(header)
+            if value:
+                forward_headers[header] = value
         upstream = await http.request(
             request.method,
             url,
             params=dict(request.query_params),
             content=body if body else None,
-            headers={"content-type": request.headers.get("content-type", "application/json")},
+            headers=forward_headers,
             timeout=60,
         )
     except httpx.TimeoutException:

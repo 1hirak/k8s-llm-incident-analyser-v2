@@ -194,15 +194,106 @@ components:
           example:
             - "kubectl patch deployment demo-app -n demo --type strategic -p '{...}'"
             - "kubectl rollout status deployment/demo-app -n demo"
+        recommended_actions:
+          type: array
+          description: |
+            Optional typed remediation proposals. These are always dry-run
+            checked and require explicit operator approval before mutation.
+          items:
+            $ref: '#/components/schemas/remediation_action'
         human_verification_steps:
           type: array
           items:
             type: string
           description: Steps a human should take to verify the fix.
+        analysis_explanation:
+          oneOf:
+            - $ref: '#/components/schemas/analysis_explanation'
+            - type: 'null'
+          description: Safe, concise explanation of how the diagnosis was formed.
+        active_error:
+          type: boolean
+          description: Whether the analysis found an active error on the target.
+        provider:
+          type: string
+          nullable: true
+          description: Identifier of the LLM provider that produced the report.
+          example: deepseek
+        model:
+          type: string
+          nullable: true
+          description: Model identifier used by the provider for the analysis.
+          example: deepseek-chat
+        target_kind:
+          $ref: '#/components/schemas/target_kind'
+        target_name:
+          type: string
+          nullable: true
+          description: Kubernetes resource name that was analysed.
         created_at:
           type: string
           format: date-time
           description: When the report was persisted (ISO 8601).
+
+    analysis_input_summary:
+      type: object
+      description: Non-sensitive summary of the redacted evidence sent for analysis.
+      required:
+        - current_log_lines
+        - previous_log_lines
+        - has_pod_status
+        - has_kubernetes_events
+        - restart_count
+        - related_pod_count
+        - redaction_applied
+        - redaction_count
+      properties:
+        current_log_lines:
+          type: integer
+          minimum: 0
+        previous_log_lines:
+          type: integer
+          minimum: 0
+        has_pod_status:
+          type: boolean
+        has_kubernetes_events:
+          type: boolean
+        restart_count:
+          type: integer
+          minimum: 0
+        related_pod_count:
+          type: integer
+          minimum: 0
+        redaction_applied:
+          type: boolean
+          description: Whether the processor redaction step ran.
+        redaction_count:
+          type: integer
+          minimum: 0
+          description: Number of redaction markers in the model input.
+
+    analysis_explanation:
+      type: object
+      description: Evidence-backed audit explanation, not hidden chain-of-thought.
+      required:
+        - rationale
+        - key_signals
+        - uncertainty
+        - input_summary
+      properties:
+        rationale:
+          type: string
+          description: Brief explanation connecting the assessment to the evidence.
+        key_signals:
+          type: array
+          items:
+            type: string
+          description: Observable log, status, or event signals used in the assessment.
+        uncertainty:
+          type: string
+          description: Missing evidence, ambiguity, or manual checks still required.
+        input_summary:
+          $ref: '#/components/schemas/analysis_input_summary'
 
     report_summary:
       type: object
@@ -263,9 +354,49 @@ components:
         pod_name:
           type: string
           description: |
-            Pod name or deployment name. If the exact pod name is not found,
-            the collector resolves it by label selector (app={pod_name}).
+            Name of the selected Kubernetes resource. For Pod targets, an
+            application name can still be resolved by label selector
+            (app={pod_name}).
           example: demo-app
+        target_kind:
+          $ref: '#/components/schemas/target_kind'
+
+    target_kind:
+      type: string
+      enum:
+        - Pod
+        - Deployment
+        - ReplicaSet
+        - StatefulSet
+        - DaemonSet
+        - Job
+        - CronJob
+        - Service
+        - Namespace
+        - Node
+      default: Pod
+      description: Kubernetes resource kind to diagnose.
+
+    target_option:
+      type: object
+      required: [name, kind]
+      properties:
+        name:
+          type: string
+        kind:
+          $ref: '#/components/schemas/target_kind'
+        namespace:
+          type: string
+          nullable: true
+
+    target_list_response:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/target_option'
 
     job_created:
       type: object
@@ -301,6 +432,9 @@ components:
           type: string
         pod_name:
           type: string
+        target_kind:
+          $ref: '#/components/schemas/target_kind'
+          description: Kubernetes resource kind being analysed.
         status:
           $ref: '#/components/schemas/job_status_enum'
         stage:
@@ -381,6 +515,9 @@ components:
           $ref: '#/components/schemas/failure_category'
         severity:
           $ref: '#/components/schemas/severity'
+        active_error:
+          type: boolean
+          default: true
         latency_ms:
           type: integer
           format: int32
@@ -452,6 +589,95 @@ components:
         fault_description:
           type: string
           description: Human-readable description of the applied fault.
+
+    remediation_action:
+      type: object
+      description: A bounded Kubernetes change; arbitrary shell commands are not accepted.
+      required: [action_type, namespace, deployment_name]
+      properties:
+        action_type:
+          type: string
+          enum: [rollout_restart, set_deployment_resources, set_deployment_image, set_deployment_probe]
+        namespace:
+          type: string
+        deployment_name:
+          type: string
+        container_name:
+          type: string
+          nullable: true
+        image:
+          type: string
+          nullable: true
+        cpu_request:
+          type: string
+          nullable: true
+        cpu_limit:
+          type: string
+          nullable: true
+        memory_request:
+          type: string
+          nullable: true
+        memory_limit:
+          type: string
+          nullable: true
+        probe_type:
+          type: string
+          enum: [readiness, liveness, startup]
+          nullable: true
+        probe_path:
+          type: string
+          nullable: true
+
+    remediation_create_request:
+      type: object
+      required: [action]
+      properties:
+        action:
+          $ref: '#/components/schemas/remediation_action'
+        requested_by:
+          type: string
+          default: operator
+
+    remediation_approval_request:
+      type: object
+      properties:
+        approved_by:
+          type: string
+          default: operator
+        confirm:
+          type: boolean
+          default: false
+
+    remediation_record:
+      type: object
+      required: [remediation_id, action, status, requested_by, dry_run_output, result, created_at, updated_at]
+      properties:
+        remediation_id:
+          type: string
+          format: uuid
+        action:
+          $ref: '#/components/schemas/remediation_action'
+        status:
+          type: string
+          enum: [pending, rejected, applying, applied, failed]
+        requested_by:
+          type: string
+        approved_by:
+          type: string
+          nullable: true
+        dry_run_output:
+          type: string
+        result:
+          type: string
+        error:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
 
     # --------------------------------------------------------------------------
     # Stats Models
@@ -532,6 +758,104 @@ components:
           description: K8s cluster connectivity status (connected | unreachable).
 
     # --------------------------------------------------------------------------
+    # Settings Models (delegated to llm-svc)
+    # --------------------------------------------------------------------------
+
+    provider_info:
+      type: object
+      description: Information about a configured LLM provider.
+      required:
+        - id
+        - name
+        - model
+        - available
+      properties:
+        id:
+          type: string
+          enum: [mock, openai, anthropic, deepseek, openrouter]
+        name:
+          type: string
+          example: OpenAI
+        model:
+          type: string
+          example: gpt-4o-mini
+        available:
+          type: boolean
+          description: |
+            Whether a usable API key is configured for this provider
+            (from the runtime config file or the environment).
+        models:
+          type: array
+          description: Current model choices supported by this provider.
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+
+    provider_config_request:
+      type: object
+      description: |
+        Request to update the runtime LLM provider configuration.
+        The active provider, an optional API key and an optional model
+        override can be set. API keys are stored server-side and are
+        never returned by any GET endpoint.
+      required:
+        - provider
+      properties:
+        provider:
+          type: string
+          enum: [mock, openai, anthropic, deepseek, openrouter]
+          description: The provider to activate for future analyses.
+        api_key:
+          type: string
+          description: |
+            API key for the selected provider. When present, it is
+            persisted (overwriting any stored key). Omit to keep the
+            stored key.
+        clear_key:
+          type: boolean
+          default: false
+          description: |
+            When true, removes any stored API key for the selected
+            provider. Ignored when api_key is present.
+        model:
+          type: string
+          nullable: true
+          description: |
+            Model override for the selected provider. When absent, the
+            current value is kept; when null, the default is restored.
+
+    llm_config_status:
+      type: object
+      description: |
+        Runtime LLM configuration status. Never contains API key values —
+        only whether each provider is available.
+      required:
+        - provider
+        - providers
+      properties:
+        provider:
+          type: string
+          enum: [mock, openai, anthropic, deepseek, openrouter]
+          description: The active provider for future analyses.
+        model:
+          type: string
+          nullable: true
+          description: Active model override, if any.
+        source:
+          type: string
+          enum: [file, env]
+          description: Whether the active provider comes from the runtime config file or the environment.
+        providers:
+          type: array
+          items:
+            $ref: '#/components/schemas/provider_info'
+
+    # --------------------------------------------------------------------------
     # Pagination Envelope
     # --------------------------------------------------------------------------
 
@@ -609,8 +933,9 @@ components:
 # ============================================================================
 # Security
 # ============================================================================
-# v1: No authentication. The gateway allows all origins (CORS *) for
-# development. v2 will add API key or OIDC authentication.
+# Development may leave the gateway token empty. External-cluster deployments
+# should set GATEWAY_API_TOKEN and send Authorization: Bearer <token>; use
+# OIDC/TLS at an ingress for production identity and session management.
 # ============================================================================
 security: []
 
@@ -628,12 +953,48 @@ tags:
     description: Fault scenario management
   - name: Stats
     description: Dashboard statistics and aggregates
+  - name: Settings
+    description: LLM provider configuration (active provider, API keys, model)
+  - name: Remediation
+    description: Dry-run and operator-approved typed Kubernetes changes
 
 # ============================================================================
 # Paths
 # ============================================================================
 
 paths:
+  /api/jobs/queue/clear:
+    post:
+      tags: [Jobs]
+      summary: Clear pending analysis queue entries
+      responses:
+        '200':
+          description: Number of queue entries removed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cleared]
+                properties:
+                  cleared:
+                    type: integer
+
+  /api/jobs/active/cancel:
+    post:
+      tags: [Jobs]
+      summary: Cancel all active analysis jobs
+      responses:
+        '200':
+          description: Number of active jobs cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cancelled]
+                properties:
+                  cancelled:
+                    type: integer
+
 
   # --------------------------------------------------------------------------
   # Health
@@ -656,6 +1017,80 @@ paths:
                 service: gateway-svc
                 version: 0.1.0
                 provider: deepseek
+
+  # --------------------------------------------------------------------------
+  # Kubernetes target discovery (delegated to collector-svc)
+  # --------------------------------------------------------------------------
+  /api/targets:
+    get:
+      tags: [Targets]
+      summary: List diagnosable Kubernetes resources
+      description: Returns names for the selected resource kind and namespace.
+      operationId: listTargets
+      parameters:
+        - name: kind
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/target_kind'
+        - name: namespace
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Namespace for namespaced resources. Omit for cluster-scoped resources.
+      responses:
+        '200':
+          description: Target list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/target_list_response'
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+  /api/cluster/status:
+    get:
+      tags: [Health]
+      summary: Check target cluster connectivity and collector permissions
+      description: Returns the resolved auth mode, API server, context, and required read checks.
+      operationId: getClusterStatus
+      parameters:
+        - name: namespace
+          in: query
+          required: false
+          schema:
+            type: string
+            default: demo
+      responses:
+        '200':
+          description: Target cluster status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cluster, mode, namespace, permissions]
+                properties:
+                  cluster:
+                    type: string
+                    enum: [connected, unreachable]
+                  mode:
+                    type: string
+                  kubeconfig:
+                    type: string
+                    nullable: true
+                  context:
+                    type: string
+                    nullable: true
+                  server:
+                    type: string
+                    nullable: true
+                  namespace:
+                    type: string
+                  permissions:
+                    type: object
+                    additionalProperties:
+                      type: boolean
 
   # --------------------------------------------------------------------------
   # Jobs (delegated to orchestrator-svc)
@@ -773,6 +1208,33 @@ paths:
       responses:
         '200':
           description: Current job state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/job_state'
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+  /api/jobs/{job_id}/cancel:
+    post:
+      tags: [Jobs]
+      summary: Cancel one active analysis job
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current terminal job state
           content:
             application/json:
               schema:
@@ -1015,7 +1477,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/error'
         '409':
-          description: A scenario is already applied. Reset first.
+          description: This scenario is already applied.
           content:
             application/json:
               schema:
@@ -1045,6 +1507,125 @@ paths:
           $ref: '#/components/responses/internal_error'
 
   # --------------------------------------------------------------------------
+  # Approved remediation (remediation-svc)
+  # --------------------------------------------------------------------------
+  /api/remediations:
+    post:
+      tags: [Remediation]
+      summary: Create a dry-run remediation proposal
+      description: Creates a typed proposal without changing cluster state.
+      operationId: createRemediation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/remediation_create_request'
+      responses:
+        '201':
+          description: Dry-run proposal created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/remediation_record'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+        '422':
+          description: Dry-run rejected by policy or Kubernetes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+
+  /api/remediations/{remediation_id}:
+    get:
+      tags: [Remediation]
+      summary: Get a remediation proposal and audit state
+      operationId: getRemediation
+      parameters:
+        - name: remediation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Remediation record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/remediation_record'
+        '404':
+          description: Remediation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+
+  /api/remediations/{remediation_id}/approve:
+    post:
+      tags: [Remediation]
+      summary: Approve and apply a remediation proposal
+      operationId: approveRemediation
+      parameters:
+        - name: remediation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/remediation_approval_request'
+      responses:
+        '200':
+          description: Remediation applied or failed with audit result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/remediation_record'
+        '409':
+          description: Proposal is no longer pending or is already applying
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+
+  /api/remediations/{remediation_id}/reject:
+    post:
+      tags: [Remediation]
+      summary: Reject a remediation proposal
+      operationId: rejectRemediation
+      parameters:
+        - name: remediation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/remediation_approval_request'
+      responses:
+        '200':
+          description: Proposal rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/remediation_record'
+
+  # --------------------------------------------------------------------------
   # Stats (delegated to reports-svc)
   # --------------------------------------------------------------------------
   /api/stats:
@@ -1069,5 +1650,84 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/stats_response'
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+  # --------------------------------------------------------------------------
+  # Settings (delegated to llm-svc)
+  # --------------------------------------------------------------------------
+  /api/settings:
+    get:
+      tags: [Settings]
+      summary: Get the active LLM provider configuration
+      description: |
+        Returns the active provider, any model override, and per-provider
+        availability. API key values are never returned.
+      operationId: getSettings
+      responses:
+        '200':
+          description: Current LLM configuration status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/llm_config_status'
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+    post:
+      tags: [Settings]
+      summary: Update the active LLM provider configuration
+      description: |
+        Sets the active provider and optionally stores or clears an API
+        key and model override. Used by the frontend Settings page.
+        Stored keys are never echoed in the response.
+      operationId: saveSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/provider_config_request'
+            example:
+              provider: openai
+              api_key: sk-...
+              model: gpt-4o-mini
+      responses:
+        '200':
+          description: Configuration updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/llm_config_status'
+        '400':
+          description: Invalid provider or model
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+        '500':
+          $ref: '#/components/responses/internal_error'
+
+  /api/settings/providers:
+    get:
+      tags: [Settings]
+      summary: List configured LLM providers
+      description: |
+        Returns all providers with their availability status (whether a
+        usable API key is set). Never returns key values.
+      operationId: listProviders
+      responses:
+        '200':
+          description: Provider list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/provider_info'
         '500':
           $ref: '#/components/responses/internal_error'

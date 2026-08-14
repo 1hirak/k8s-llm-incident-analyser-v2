@@ -382,3 +382,66 @@ class TestFullPipeline:
                 resp = await client.get("/health")
             assert resp.status_code == 200
             assert resp.json()["service"] == service
+
+
+class TestLLMConfigRuntime:
+    """The Settings page flow: writing a key to the config file makes a
+    provider available and the active selection resolves at analysis time."""
+
+    @pytest.fixture
+    def llm_env(self, tmp_path):
+        config_path = str(tmp_path / "llm-config.json")
+        load_service_app(
+            "llm",
+            env={"LLM_PROVIDER": "mock", "LLM_CONFIG_PATH": config_path},
+        )
+        # The store reads LLM_CONFIG_PATH at request time, so re-patch it
+        # around every request (the import-time patch has already ended).
+        return config_path
+
+    def _client(self, config_path):
+        app = load_service_app("llm")
+        return httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://llm"
+        )
+
+    async def test_config_roundtrip_never_echoes_key(self, llm_env):
+        with patch.dict(os.environ, {"LLM_CONFIG_PATH": llm_env}):
+            async with self._client(llm_env) as client:
+                resp = await client.post(
+                    "/config",
+                    json={"provider": "openai", "api_key": "sk-integration-secret"},
+                )
+                assert resp.status_code == 200
+                status = resp.json()
+                assert status["provider"] == "openai"
+                assert status["source"] == "file"
+                openai_item = next(
+                    p for p in status["providers"] if p["id"] == "openai"
+                )
+                assert openai_item["available"] is True
+                assert "sk-integration-secret" not in resp.text
+
+                resp = await client.get("/config")
+                assert resp.status_code == 200
+                assert "sk-integration-secret" not in resp.text
+
+                resp = await client.get("/providers")
+                items = {p["id"]: p for p in resp.json()["items"]}
+                assert items["openai"]["available"] is True
+
+    async def test_cleared_key_makes_provider_unavailable(self, llm_env):
+        with patch.dict(os.environ, {"LLM_CONFIG_PATH": llm_env}):
+            async with self._client(llm_env) as client:
+                await client.post(
+                    "/config",
+                    json={"provider": "deepseek", "api_key": "dk-secret"},
+                )
+                resp = await client.post(
+                    "/config",
+                    json={"provider": "deepseek", "clear_key": True},
+                )
+                deepseek_item = next(
+                    p for p in resp.json()["providers"] if p["id"] == "deepseek"
+                )
+                assert deepseek_item["available"] is False

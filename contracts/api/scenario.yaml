@@ -31,9 +31,9 @@ info:
     Requires K8s RBAC: ServiceAccount with deployment patcher permissions
     (deployments — get, list, patch, update).
 
-    The service tracks whether a scenario is currently applied (in-memory
-    state). Applying a scenario when one is already active returns 409 —
-    the caller must reset first.
+    The service tracks applied scenarios in memory. Multiple different
+    scenarios may be active at once; applying the same scenario twice returns
+    409. The reset operation restores the complete healthy baseline.
 servers:
   - url: http://scenario:8006
     description: Docker network internal
@@ -114,9 +114,9 @@ paths:
         k8s/scenarios/{scenario_id}/fault.yaml and applies it via:
           kubectl patch deployment demo-app -n demo --type strategic -p "{fault.yaml}"
 
-        Sets in-memory state to track that a scenario is active.
-        Returns 409 if a scenario is already applied — caller must POST
-        /scenarios/reset first.
+         Sets in-memory state to track that this scenario is active. Multiple
+         different scenarios may be applied together. Returns 409 if this same
+         scenario is already applied.
       operationId: applyScenario
       parameters:
         - name: scenario_id
@@ -143,7 +143,7 @@ paths:
               schema:
                 $ref: 'gateway.yaml#/components/schemas/error'
         '409':
-          description: A scenario is already applied — reset first
+          description: This scenario is already applied
           content:
             application/json:
               schema:
@@ -165,7 +165,7 @@ paths:
         2. kubectl apply -f k8s/base/
         3. kubectl rollout status deployment/demo-app -n demo
 
-        Clears the in-memory scenario-applied state.
+        Clears all in-memory scenario-applied state.
       operationId: resetScenarios
       responses:
         '200':

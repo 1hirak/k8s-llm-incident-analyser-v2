@@ -30,6 +30,8 @@ spec:
               value: "30"
             - name: KUBECTL_LOG_TAIL
               value: "500"
+            - name: KUBERNETES_AUTH_MODE
+              value: "in-cluster"
           readinessProbe:
             httpGet:
               path: /health

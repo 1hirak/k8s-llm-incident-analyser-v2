@@ -2,7 +2,7 @@
 # OpenAPI 3.1 Contract — llm-svc (Internal)
 # ============================================================================
 # The LLM service owns all LLM provider integrations (mock, openai,
-# anthropic, deepseek), prompt building, and structured-output validation.
+# anthropic, deepseek, openrouter), prompt building, and structured-output validation.
 # It is the only service that holds API keys for external LLM vendors.
 #
 # This service is called by:
@@ -35,6 +35,7 @@ info:
       - openai:    OpenAI chat.completions.parse() with structured outputs
       - anthropic: Anthropic messages.parse() with Pydantic output
       - deepseek:  DeepSeek httpx POST with json_object mode + schema in prompt
+      - openrouter: OpenRouter httpx POST with json_object mode + schema in prompt
 
     API keys are read from environment variables and never logged.
 servers:
@@ -44,26 +45,13 @@ servers:
 components:
   schemas:
     provider_info:
-      type: object
-      description: Information about a configured LLM provider.
-      required:
-        - id
-        - name
-        - model
-        - available
-      properties:
-        id:
-          type: string
-          enum: [mock, openai, anthropic, deepseek]
-        name:
-          type: string
-          example: OpenAI
-        model:
-          type: string
-          example: gpt-4o-mini
-        available:
-          type: boolean
-          description: Whether the API key is configured for this provider.
+      $ref: 'gateway.yaml#/components/schemas/provider_info'
+
+    provider_config_request:
+      $ref: 'gateway.yaml#/components/schemas/provider_config_request'
+
+    llm_config_status:
+      $ref: 'gateway.yaml#/components/schemas/llm_config_status'
 
 tags:
   - name: Health
@@ -129,6 +117,54 @@ paths:
                     model: gpt-4o-mini
                     available: false
 
+  /config:
+    get:
+      tags: [Providers]
+      summary: Get the active LLM provider configuration
+      description: |
+        Returns the active provider, any model override, and per-provider
+        availability. API key values are never returned.
+      operationId: getLlmConfig
+      responses:
+        '200':
+          description: Current configuration status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/llm_config_status'
+
+    post:
+      tags: [Providers]
+      summary: Update the active LLM provider configuration
+      description: |
+        Sets the active provider and optionally stores or clears an API
+        key and model override. Used by the frontend Settings page.
+        Stored keys are never echoed in the response.
+      operationId: setLlmConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/provider_config_request'
+            example:
+              provider: openai
+              api_key: sk-...
+              model: gpt-4o-mini
+      responses:
+        '200':
+          description: Configuration updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/llm_config_status'
+        '400':
+          description: Invalid provider or model
+          content:
+            application/json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'
+
   /analyse:
     post:
       tags: [Analyse]
@@ -154,14 +190,36 @@ paths:
             application/json:
               schema:
                 $ref: 'gateway.yaml#/components/schemas/incident_report'
+        '429':
+          description: |
+            Provider rate limit hit (e.g. DeepSeek/OpenAI 429). The caller
+            should back off and retry.
         '500':
           description: |
-            Analysis failed. Common causes:
-            - LLM API error (401, 429, 503)
-            - Structured output validation failure
-            - Response truncated (increase LLM_MAX_TOKENS)
-            - Content filtered by safety system
+            Server-side configuration error or unhandled internal error.
+            Common causes:
+            - Missing/invalid API key for the active provider
+            - Unknown provider id
           content:
-            application/json:
+            application/problem+json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'
+        '502':
+          description: |
+            Provider returned a usable response that we could not turn into a
+            valid IncidentReport. Common causes:
+            - Output truncated by LLM_MAX_TOKENS (finish_reason=length)
+            - Content filtered by the provider's safety system
+            - Response did not validate against the schema
+            - Response body could not be parsed as JSON
+          content:
+            application/problem+json:
+              schema:
+                $ref: 'gateway.yaml#/components/schemas/error'
+        '503':
+          description: |
+            Provider is unreachable, timed out, or returned 5xx.
+          content:
+            application/problem+json:
               schema:
                 $ref: 'gateway.yaml#/components/schemas/error'

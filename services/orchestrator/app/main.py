@@ -40,6 +40,14 @@ PIPELINE_TIMEOUT = int(os.environ.get("PIPELINE_TIMEOUT", "120"))
 TERMINAL_STATUSES = ("done", "failed")
 
 
+def _job_tasks(request: Request) -> dict[str, asyncio.Task[None]]:
+    tasks = getattr(request.app.state, "job_tasks", None)
+    if tasks is None:
+        tasks = {}
+        request.app.state.job_tasks = tasks
+    return tasks
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.redis = redis.from_url(REDIS_URL, decode_responses=True)
@@ -84,10 +92,14 @@ async def create_job(request: AnalysisRequest, req: Request) -> JobCreated:
     """Create a job, queue it, and run the pipeline in the background."""
     store = _store(req)
     job_id = new_id()
-    await store.create(job_id, request.namespace, request.pod_name)
+    await store.create(
+        job_id, request.namespace, request.pod_name, request.target_kind
+    )
     log.info(
         "job_created", job_id=job_id,
-        namespace=request.namespace, pod=request.pod_name,
+        namespace=request.namespace,
+        target_kind=request.target_kind,
+        target=request.pod_name,
     )
 
     # Durable snapshot (best-effort)
@@ -97,6 +109,7 @@ async def create_job(request: AnalysisRequest, req: Request) -> JobCreated:
             job_id=job_id,
             namespace=request.namespace,
             pod_name=request.pod_name,
+            target_kind=request.target_kind,
             status="queued",
         )
     )
@@ -104,7 +117,12 @@ async def create_job(request: AnalysisRequest, req: Request) -> JobCreated:
     async def _run_with_timeout() -> None:
         try:
             await asyncio.wait_for(
-                pipeline.run(job_id, request.namespace, request.pod_name),
+                pipeline.run(
+                    job_id,
+                    request.namespace,
+                    request.pod_name,
+                    request.target_kind,
+                ),
                 timeout=PIPELINE_TIMEOUT,
             )
         except asyncio.TimeoutError:
@@ -112,7 +130,15 @@ async def create_job(request: AnalysisRequest, req: Request) -> JobCreated:
         except Exception as e:
             log.error("pipeline_task_crashed", job_id=job_id, error=str(e))
 
-    asyncio.create_task(_run_with_timeout())
+    task = asyncio.create_task(_run_with_timeout())
+    tasks = _job_tasks(req)
+    tasks[job_id] = task
+
+    def remove_task(done_task: asyncio.Task[None]) -> None:
+        if tasks.get(job_id) is done_task:
+            tasks.pop(job_id, None)
+
+    task.add_done_callback(remove_task)
     return JobCreated(job_id=job_id, status="queued")
 
 
@@ -132,6 +158,60 @@ async def list_jobs(
         "limit": limit,
         "offset": offset,
     }
+
+
+@app.post("/jobs/queue/clear", tags=["Jobs"])
+async def clear_job_queue(req: Request) -> dict:
+    """Clear pending Redis queue entries; running tasks are unchanged."""
+    cleared = await _store(req).clear_queue()
+    log.info("job_queue_cleared", entries=cleared)
+    return {"cleared": cleared}
+
+
+async def _cancel_job(job_id: str, req: Request) -> bool:
+    store = _store(req)
+    job = await store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status in TERMINAL_STATUSES:
+        return False
+
+    task = _job_tasks(req).get(job_id)
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    current = await store.get(job_id)
+    if current is not None and current.status not in TERMINAL_STATUSES:
+        await store.fail(job_id, "Diagnosis cancelled by user", 0)
+    return True
+
+
+@app.post("/jobs/active/cancel", tags=["Jobs"])
+async def cancel_active_jobs(req: Request) -> dict:
+    """Cancel every non-terminal diagnosis owned by this orchestrator."""
+    jobs, _ = await _store(req).list(limit=100)
+    cancelled = 0
+    for job in jobs:
+        if job.status in TERMINAL_STATUSES:
+            continue
+        if await _cancel_job(job.job_id, req):
+            cancelled += 1
+    log.info("active_jobs_cancelled", jobs=cancelled)
+    return {"cancelled": cancelled}
+
+
+@app.post("/jobs/{job_id}/cancel", tags=["Jobs"])
+async def cancel_job(job_id: str, req: Request) -> dict:
+    """Cancel one diagnosis without deleting its audit record."""
+    await _cancel_job(job_id, req)
+    job = await _store(req).get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job.model_dump()
 
 
 @app.get("/jobs/{job_id}", tags=["Jobs"])
@@ -156,23 +236,29 @@ async def stream_job(job_id: str, req: Request) -> StreamingResponse:
         raise HTTPException(status_code=404, detail="Job not found")
 
     async def event_generator():
-        # 1. Replay current state
-        if job.status in TERMINAL_STATUSES:
-            yield _format_terminal_event(job)
-            return
-        stage_payload = {
-            "event": "stage",
-            "job_id": job.job_id,
-            "status": job.status,
-            "stage": job.stage or "",
-            "updated_at": job.updated_at,
-        }
-        yield f"event: stage\ndata: {json.dumps(stage_payload)}\n\n"
-
-        # 2. Forward live events until terminal
+        # Subscribe before reading state so a terminal transition cannot be
+        # published between the state read and the subscription.
         pubsub, channel = store.subscribe(job_id)
         try:
             await pubsub.subscribe(channel)
+
+            # 1. Replay current state after subscribing.
+            current = await store.get(job_id)
+            if current is None:
+                return
+            if current.status in TERMINAL_STATUSES:
+                yield _format_terminal_event(current)
+                return
+            stage_payload = {
+                "event": "stage",
+                "job_id": current.job_id,
+                "status": current.status,
+                "stage": current.stage or "",
+                "updated_at": current.updated_at,
+            }
+            yield f"event: stage\ndata: {json.dumps(stage_payload)}\n\n"
+
+            # 2. Forward live events until terminal.
             while True:
                 if await req.is_disconnected():
                     break

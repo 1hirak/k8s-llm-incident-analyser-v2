@@ -1,0 +1,13 @@
+{
+  "scenario_id": "13-insufficient-cpu",
+  "name": "Insufficient CPU",
+  "description": "CPU request set to 99 cores, exceeding the capacity of the cluster node",
+  "true_root_cause": "No node has enough allocatable CPU for the pod request",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "resource",
+  "true_severity": "high",
+  "expected_log_patterns": ["FailedScheduling", "Insufficient cpu", "Pending"],
+  "expected_event_reasons": ["FailedScheduling"],
+  "correct_remediation_keywords": ["cpu", "requests", "resources", "deployment"],
+  "notes": "The oversized request prevents scheduling on the demo cluster."
+}

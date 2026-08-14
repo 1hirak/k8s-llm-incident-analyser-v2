@@ -1,8 +1,8 @@
-SERVICES := shared collector processor llm reports orchestrator gateway scenario
+SERVICES := shared collector processor llm reports orchestrator gateway scenario watcher remediation
 PYTEST := .venv/bin/python -m pytest
 
 .PHONY: help install dev test test-services test-root test-cov lint format clean \
-        up down up-dev logs build e2e eval frontend-install frontend-build frontend-types
+        up restart down up-dev external-up logs build e2e eval frontend-install frontend-build frontend-types
 
 help:
 	@echo "Available targets:"
@@ -15,8 +15,10 @@ help:
 	@echo "  lint            Run ruff linter"
 	@echo "  format          Auto-format with ruff"
 	@echo "  clean           Remove build artifacts and caches"
-	@echo "  up              Start the full platform stack (docker compose)"
+	@echo "  up              Start minikube, deploy demo-app, and start the platform"
+	@echo "  restart         Restart minikube workload and the platform (keeps data)"
 	@echo "  up-dev          Start the stack with hot-reload dev override"
+	@echo "  external-up     Start against an explicitly configured external cluster"
 	@echo "  down            Stop the stack"
 	@echo "  logs            Tail platform logs"
 	@echo "  build           Build all service images"
@@ -63,11 +65,18 @@ clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 up:
-	docker compose up --build -d
-	@echo "Frontend: http://localhost:3000  Gateway: http://localhost:8000"
+	@bash scripts/start_local.sh
+
+restart:
+	@bash scripts/restart_system.sh
 
 up-dev:
+	@SKIP_COMPOSE=true bash scripts/start_local.sh
 	docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+
+external-up:
+	@test -f .env.external || (echo "Create .env.external from .env.external.example first." && exit 1)
+	docker compose -f docker-compose.external.yml --env-file .env.external up --build -d
 
 down:
 	docker compose down

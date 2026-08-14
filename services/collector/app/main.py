@@ -8,8 +8,8 @@ Kubernetes RBAC.
 import os
 
 import structlog
-from fastapi import FastAPI, HTTPException
-from k8s_llm_shared import AnalysisRequest, RawEvidence
+from fastapi import FastAPI, HTTPException, Query
+from k8s_llm_shared import AnalysisRequest, RawEvidence, TargetKind, TargetListResponse
 from k8s_llm_shared.web import add_error_handlers, health_payload
 
 from app.collector import KubernetesCollector
@@ -34,14 +34,42 @@ def health() -> dict:
     return health_payload("collector-svc", cluster=cluster)
 
 
+@app.get("/status", tags=["Health"])
+def status(namespace: str = Query(default="demo", min_length=1)) -> dict:
+    """Return connection and read-permission diagnostics for installation checks."""
+    return collector.connection_status(namespace)
+
+
+@app.get("/targets", response_model=TargetListResponse, tags=["Targets"])
+def list_targets(
+    kind: TargetKind,
+    namespace: str | None = Query(default=None),
+) -> TargetListResponse:
+    """List selectable Kubernetes resources for the diagnosis form."""
+    try:
+        return TargetListResponse(
+            items=collector.list_targets(kind, namespace=namespace)
+        )
+    except Exception as e:
+        log.error("target_list_failed", kind=kind, namespace=namespace, error=str(e))
+        raise HTTPException(
+            status_code=500, detail=f"Target discovery failed: {e}"
+        ) from e
+
+
 @app.post("/collect", response_model=RawEvidence, tags=["Collect"])
 def collect_evidence(request: AnalysisRequest) -> RawEvidence:
-    """Collect diagnostic evidence from a pod via kubectl."""
+    """Collect diagnostic evidence from a Kubernetes resource via kubectl."""
     log.info(
-        "collect_started", namespace=request.namespace, pod=request.pod_name
+        "collect_started",
+        namespace=request.namespace,
+        target_kind=request.target_kind,
+        target=request.pod_name,
     )
     try:
-        evidence = collector.collect(request.namespace, request.pod_name)
+        evidence = collector.collect(
+            request.namespace, request.pod_name, request.target_kind
+        )
     except FileNotFoundError as e:
         log.error("kubectl_not_found", error=str(e))
         raise HTTPException(
@@ -55,7 +83,9 @@ def collect_evidence(request: AnalysisRequest) -> RawEvidence:
     log.info(
         "collect_complete",
         namespace=evidence.namespace,
-        pod=evidence.pod_name,
+        target_kind=evidence.target_kind,
+        target=evidence.target_name or evidence.pod_name,
+        pods=len(evidence.pod_names),
         restart_count=evidence.restart_count,
     )
     return evidence

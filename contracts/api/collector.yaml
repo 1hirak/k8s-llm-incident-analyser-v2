@@ -56,9 +56,9 @@ paths:
   /collect:
     post:
       tags: [Collect]
-      summary: Collect diagnostic evidence from a pod
+      summary: Collect diagnostic evidence from a Kubernetes target
       description: |
-        Runs kubectl subprocess calls to gather:
+        Runs kubectl subprocess calls to gather resource and pod evidence:
         - Current and previous pod logs (--tail=500 --timestamps=true)
         - Pod description (kubectl describe pod)
         - Namespace events (kubectl get events --sort-by=.metadata.creationTimestamp)
@@ -81,6 +81,7 @@ paths:
             example:
               namespace: demo
               pod_name: demo-app
+              target_kind: Deployment
       responses:
         '200':
           description: Evidence collected successfully
@@ -91,6 +92,10 @@ paths:
               example:
                 namespace: demo
                 pod_name: demo-app-abc123
+                target_kind: Pod
+                target_name: demo-app-abc123
+                target_context: "Target kind: Pod"
+                pod_names: [demo-app-abc123]
                 current_logs: ""
                 previous_logs: "2026-07-21T10:01:00Z WARNING Memory allocation stress test starting..."
                 pod_status: "Name: demo-app-abc123\n...\n    Last State: Terminated\n      Reason: OOMKilled\n      Exit Code: 137\n    Restart Count: 3"

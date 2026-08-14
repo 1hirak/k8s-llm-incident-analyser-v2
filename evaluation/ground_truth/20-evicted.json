@@ -1,0 +1,13 @@
+{
+  "scenario_id": "20-evicted",
+  "name": "Ephemeral Storage Pressure",
+  "description": "Container writes beyond a 16Mi ephemeral-storage limit and is vulnerable to eviction",
+  "true_root_cause": "The container exceeds its ephemeral storage limit",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "resource",
+  "true_severity": "high",
+  "expected_log_patterns": ["ephemeral storage", "evicted", "storage"],
+  "expected_event_reasons": ["Evicted", "Killing"],
+  "correct_remediation_keywords": ["ephemeral-storage", "limit", "resources", "deployment"],
+  "notes": "The demo application writes a controlled storage payload when this scenario is active."
+}

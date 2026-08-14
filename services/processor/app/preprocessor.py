@@ -72,6 +72,10 @@ class LogPreprocessor:
         return EvidencePackage(
             namespace=evidence.namespace,
             pod_name=evidence.pod_name,
+            target_kind=evidence.target_kind,
+            target_name=evidence.target_name,
+            target_context=evidence.target_context,
+            pod_names=evidence.pod_names,
             current_logs=self._filter_with_context(evidence.current_logs),
             previous_logs=self._filter_with_context(evidence.previous_logs),
             pod_status_summary=evidence.pod_status[:2000],

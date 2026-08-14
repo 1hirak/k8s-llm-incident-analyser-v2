@@ -40,5 +40,36 @@ EvidenceSource = Literal[
     "pod_status",
 ]
 
-# Exactly 4 values — LLM provider identifiers
-ProviderId = Literal["mock", "openai", "anthropic", "deepseek"]
+# Exactly 5 values — LLM provider identifiers
+ProviderId = Literal["mock", "openai", "anthropic", "deepseek", "openrouter"]
+
+# Kubernetes resources supported as diagnosis targets.
+TargetKind = Literal[
+    "Pod",
+    "Deployment",
+    "ReplicaSet",
+    "StatefulSet",
+    "DaemonSet",
+    "Job",
+    "CronJob",
+    "Service",
+    "Namespace",
+    "Node",
+]
+
+# Structured remediation actions. Free-form shell commands are intentionally
+# excluded from this contract.
+RemediationActionType = Literal[
+    "rollout_restart",
+    "set_deployment_resources",
+    "set_deployment_image",
+    "set_deployment_probe",
+]
+
+RemediationStatus = Literal[
+    "pending",
+    "rejected",
+    "applying",
+    "applied",
+    "failed",
+]

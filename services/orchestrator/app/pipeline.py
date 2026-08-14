@@ -71,7 +71,13 @@ class Pipeline:
             pass
         return "Calling LLM provider"
 
-    async def run(self, job_id: str, namespace: str, pod_name: str) -> None:
+    async def run(
+        self,
+        job_id: str,
+        namespace: str,
+        pod_name: str,
+        target_kind: str = "Pod",
+    ) -> None:
         start = time.monotonic()
 
         def elapsed_ms() -> int:
@@ -81,9 +87,9 @@ class Pipeline:
             # Stage 1: collect
             await self._store.transition(
                 job_id, "collecting",
-                f"Collecting evidence for {namespace}/{pod_name}",
+                f"Collecting evidence for {target_kind} {namespace}/{pod_name}",
             )
-            raw = await self._call_collect(namespace, pod_name)
+            raw = await self._call_collect(namespace, pod_name, target_kind)
 
             # Stage 2: process
             await self._store.transition(
@@ -100,7 +106,7 @@ class Pipeline:
             # Stage 4: persist
             await self._store.transition(job_id, "persisting", "Saving report")
             incident_id = await self._call_save_report(
-                report, raw.namespace, raw.pod_name, job_id
+                report, raw.namespace, raw.pod_name, job_id, raw.target_kind
             )
 
             # Done
@@ -111,6 +117,7 @@ class Pipeline:
                     job_id=job_id,
                     namespace=namespace,
                     pod_name=pod_name,
+                    target_kind=target_kind,
                     status="done",
                     incident_id=incident_id,
                     latency_ms=latency,
@@ -140,10 +147,16 @@ class Pipeline:
     # Downstream calls (raise RuntimeError with context on failure)
     # ------------------------------------------------------------------
 
-    async def _call_collect(self, namespace: str, pod_name: str) -> RawEvidence:
+    async def _call_collect(
+        self, namespace: str, pod_name: str, target_kind: str = "Pod"
+    ) -> RawEvidence:
         data = await self._post(
             f"{self._collector_url}/collect",
-            {"namespace": namespace, "pod_name": pod_name},
+            {
+                "namespace": namespace,
+                "pod_name": pod_name,
+                "target_kind": target_kind,
+            },
             stage="collector",
             timeout=60,
         )
@@ -168,7 +181,12 @@ class Pipeline:
         return IncidentReport(**data)
 
     async def _call_save_report(
-        self, report: IncidentReport, namespace: str, pod_name: str, job_id: str
+        self,
+        report: IncidentReport,
+        namespace: str,
+        pod_name: str,
+        job_id: str,
+        target_kind: str = "Pod",
     ) -> str:
         data = await self._post(
             f"{self._reports_url}/reports",
@@ -176,6 +194,7 @@ class Pipeline:
                 "report": report.model_dump(),
                 "namespace": namespace,
                 "pod_name": pod_name,
+                "target_kind": target_kind,
                 "job_id": job_id,
             },
             stage="reports",

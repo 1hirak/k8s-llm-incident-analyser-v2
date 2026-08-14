@@ -59,6 +59,12 @@ class TestK8sScenarioFaults:
             "01-missing-env", "02-db-unavailable", "03-crashloop",
             "04-imagepull", "05-oom", "06-readiness", "07-liveness",
             "08-bad-configmap", "09-app-exception", "10-wrong-port",
+            "11-failed-scheduling", "12-insufficient-memory",
+            "13-insufficient-cpu", "14-missing-configmap", "15-missing-secret",
+            "16-startup-probe", "17-failed-mount", "18-service-no-endpoints",
+            "19-dns-failure", "20-evicted", "21-cpu-throttling",
+            "22-node-selector", "23-invalid-image-pull-secret",
+            "24-missing-service-account", "25-readonly-filesystem",
         ]
         for s in expected:
             path = os.path.join(SCENARIOS_DIR, s, "fault.yaml")
@@ -123,6 +129,7 @@ class TestK8sPlatformServices:
         "namespace.yaml",
         "rbac-collector.yaml",
         "rbac-scenario.yaml",
+        "rbac-remediation.yaml",
         "redis.yaml",
         "gateway.yaml",
         "orchestrator.yaml",
@@ -131,6 +138,8 @@ class TestK8sPlatformServices:
         "llm.yaml",
         "reports.yaml",
         "scenario.yaml",
+        "watcher.yaml",
+        "remediation.yaml",
         "frontend.yaml",
     ]
 
@@ -142,6 +151,8 @@ class TestK8sPlatformServices:
         "llm": 8004,
         "reports": 8005,
         "scenario": 8006,
+        "watcher": 8007,
+        "remediation": 8008,
     }
 
     def test_all_manifest_files_exist(self):

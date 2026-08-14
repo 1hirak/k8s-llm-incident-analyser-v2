@@ -17,13 +17,19 @@ describe("AppSidebar", () => {
     expect(brand).toBeInTheDocument();
   });
 
-  it("renders all nav items", async () => {
+  it("renders workflow nav items", async () => {
     render(<AppSidebar />);
     expect(await screen.findByText("Dashboard")).toBeInTheDocument();
-    expect(screen.getByText("Analyse")).toBeInTheDocument();
-    expect(screen.getByText("Jobs")).toBeInTheDocument();
+    expect(screen.getByText("Trigger Error")).toBeInTheDocument();
+    expect(screen.getByText("Errors")).toBeInTheDocument();
     expect(screen.getByText("Reports")).toBeInTheDocument();
-    expect(screen.getByText("Scenarios")).toBeInTheDocument();
+  });
+
+  it("renders system nav items", async () => {
+    render(<AppSidebar />);
+    expect(await screen.findByText("Diagnose Target")).toBeInTheDocument();
+    expect(screen.getByText("Activity")).toBeInTheDocument();
+    expect(screen.getByText("Settings")).toBeInTheDocument();
   });
 
   it("renders health pill", async () => {
@@ -37,15 +43,20 @@ describe("AppSidebar", () => {
     expect(link).toHaveAttribute("href", "/");
   });
 
-  it("Analyse link points to /analyse", async () => {
+  it("Trigger Error link points to /scenarios", async () => {
     render(<AppSidebar />);
-    const link = screen.getByText("Analyse").closest("a");
-    expect(link).toHaveAttribute("href", "/analyse");
+    const link = screen.getByText("Trigger Error").closest("a");
+    expect(link).toHaveAttribute("href", "/scenarios");
   });
 
-  it("renders Console section label", async () => {
+  it("renders Workflow section label", async () => {
     render(<AppSidebar />);
-    expect(await screen.findByText("Console")).toBeInTheDocument();
+    expect(await screen.findByText("Workflow")).toBeInTheDocument();
+  });
+
+  it("renders System section label", async () => {
+    render(<AppSidebar />);
+    expect(await screen.findByText("System")).toBeInTheDocument();
   });
 });
 
@@ -55,8 +66,8 @@ describe("MobileNav", () => {
     expect(await screen.findByText("K8s Incident Analyser")).toBeInTheDocument();
   });
 
-  it("renders all nav links", async () => {
+  it("renders menu button", async () => {
     render(<MobileNav />);
-    expect(await screen.findByText("Dashboard")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /open menu/i })).toBeInTheDocument();
   });
 });

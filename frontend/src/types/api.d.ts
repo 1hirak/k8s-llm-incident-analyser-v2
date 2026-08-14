@@ -4,6 +4,82 @@
  */
 
 export interface paths {
+    "/api/jobs/queue/clear": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Clear pending analysis queue entries */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Number of queue entries removed */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            cleared: number;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/active/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel all active analysis jobs */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Number of active jobs cancelled */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            cancelled: number;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -16,6 +92,46 @@ export interface paths {
          * @description Returns the gateway service status and configured LLM provider.
          */
         get: operations["getHealth"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/targets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List diagnosable Kubernetes resources
+         * @description Returns names for the selected resource kind and namespace.
+         */
+        get: operations["listTargets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cluster/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Check target cluster connectivity and collector permissions
+         * @description Returns the resolved auth mode, API server, context, and required read checks.
+         */
+        get: operations["getClusterStatus"];
         put?: never;
         post?: never;
         delete?: never;
@@ -65,6 +181,54 @@ export interface paths {
         get: operations["getJob"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel one active analysis job */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    job_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Current terminal job state */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["job_state"];
+                    };
+                };
+                /** @description Job not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["error"];
+                    };
+                };
+                500: components["responses"]["internal_error"];
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -211,6 +375,77 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/remediations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a dry-run remediation proposal
+         * @description Creates a typed proposal without changing cluster state.
+         */
+        post: operations["createRemediation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/remediations/{remediation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a remediation proposal and audit state */
+        get: operations["getRemediation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/remediations/{remediation_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve and apply a remediation proposal */
+        post: operations["approveRemediation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/remediations/{remediation_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject a remediation proposal */
+        post: operations["rejectRemediation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/stats": {
         parameters: {
             query?: never;
@@ -223,6 +458,57 @@ export interface paths {
          * @description Returns aggregate metrics for the dashboard.
          */
         get: operations["getStats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the active LLM provider configuration
+         * @description Returns the active provider, any model override, and per-provider
+         *     availability. API key values are never returned.
+         *
+         */
+        get: operations["getSettings"];
+        put?: never;
+        /**
+         * Update the active LLM provider configuration
+         * @description Sets the active provider and optionally stores or clears an API
+         *     key and model override. Used by the frontend Settings page.
+         *     Stored keys are never echoed in the response.
+         *
+         */
+        post: operations["saveSettings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List configured LLM providers
+         * @description Returns all providers with their availability status (whether a
+         *     usable API key is set). Never returns key values.
+         *
+         */
+        get: operations["listProviders"];
         put?: never;
         post?: never;
         delete?: never;
@@ -321,13 +607,57 @@ export interface components {
              *     ]
              */
             recommended_commands: string[];
+            /** @description Optional typed remediation proposals. These are always dry-run
+             *     checked and require explicit operator approval before mutation.
+             *      */
+            recommended_actions?: components["schemas"]["remediation_action"][];
             /** @description Steps a human should take to verify the fix. */
             human_verification_steps: string[];
+            /** @description Safe, concise explanation of how the diagnosis was formed. */
+            analysis_explanation?: components["schemas"]["analysis_explanation"] | null;
+            /** @description Whether the analysis found an active error on the target. */
+            active_error?: boolean;
+            /**
+             * @description Identifier of the LLM provider that produced the report.
+             * @example deepseek
+             */
+            provider?: string | null;
+            /**
+             * @description Model identifier used by the provider for the analysis.
+             * @example deepseek-chat
+             */
+            model?: string | null;
+            target_kind?: components["schemas"]["target_kind"];
+            /** @description Kubernetes resource name that was analysed. */
+            target_name?: string | null;
             /**
              * Format: date-time
              * @description When the report was persisted (ISO 8601).
              */
             created_at: string;
+        };
+        /** @description Non-sensitive summary of the redacted evidence sent for analysis. */
+        analysis_input_summary: {
+            current_log_lines: number;
+            previous_log_lines: number;
+            has_pod_status: boolean;
+            has_kubernetes_events: boolean;
+            restart_count: number;
+            related_pod_count: number;
+            /** @description Whether the processor redaction step ran. */
+            redaction_applied: boolean;
+            /** @description Number of redaction markers in the model input. */
+            redaction_count: number;
+        };
+        /** @description Evidence-backed audit explanation, not hidden chain-of-thought. */
+        analysis_explanation: {
+            /** @description Brief explanation connecting the assessment to the evidence. */
+            rationale: string;
+            /** @description Observable log, status, or event signals used in the assessment. */
+            key_signals: string[];
+            /** @description Missing evidence, ambiguity, or manual checks still required. */
+            uncertainty: string;
+            input_summary: components["schemas"]["analysis_input_summary"];
         };
         /** @description Summary of an incident report for list views. Excludes nested
          *     arrays (supporting_evidence, recommended_commands,
@@ -357,12 +687,28 @@ export interface components {
              */
             namespace: string;
             /**
-             * @description Pod name or deployment name. If the exact pod name is not found,
-             *     the collector resolves it by label selector (app={pod_name}).
+             * @description Name of the selected Kubernetes resource. For Pod targets, an
+             *     application name can still be resolved by label selector
+             *     (app={pod_name}).
              *
              * @example demo-app
              */
             pod_name: string;
+            target_kind?: components["schemas"]["target_kind"];
+        };
+        /**
+         * @description Kubernetes resource kind to diagnose.
+         * @default Pod
+         * @enum {string}
+         */
+        target_kind: "Pod" | "Deployment" | "ReplicaSet" | "StatefulSet" | "DaemonSet" | "Job" | "CronJob" | "Service" | "Namespace" | "Node";
+        target_option: {
+            name: string;
+            kind: components["schemas"]["target_kind"];
+            namespace?: string | null;
+        };
+        target_list_response: {
+            items: components["schemas"]["target_option"][];
         };
         /** @description Response when a new analysis job is created. */
         job_created: {
@@ -381,6 +727,8 @@ export interface components {
             job_id: string;
             namespace: string;
             pod_name: string;
+            /** @description Kubernetes resource kind being analysed. */
+            target_kind?: components["schemas"]["target_kind"];
             status: components["schemas"]["job_status_enum"];
             /** @description Human-readable stage detail (e.g. "Calling DeepSeek deepseek-chat"). */
             stage?: string | null;
@@ -425,6 +773,8 @@ export interface components {
             incident_id: string;
             failure_category?: components["schemas"]["failure_category"];
             severity?: components["schemas"]["severity"];
+            /** @default true */
+            active_error: boolean;
             /** Format: int32 */
             latency_ms?: number;
         };
@@ -466,6 +816,49 @@ export interface components {
             /** @description Human-readable description of the applied fault. */
             fault_description?: string;
         };
+        /** @description A bounded Kubernetes change; arbitrary shell commands are not accepted. */
+        remediation_action: {
+            /** @enum {string} */
+            action_type: "rollout_restart" | "set_deployment_resources" | "set_deployment_image" | "set_deployment_probe";
+            namespace: string;
+            deployment_name: string;
+            container_name?: string | null;
+            image?: string | null;
+            cpu_request?: string | null;
+            cpu_limit?: string | null;
+            memory_request?: string | null;
+            memory_limit?: string | null;
+            /** @enum {string|null} */
+            probe_type?: "readiness" | "liveness" | "startup" | null;
+            probe_path?: string | null;
+        };
+        remediation_create_request: {
+            action: components["schemas"]["remediation_action"];
+            /** @default operator */
+            requested_by: string;
+        };
+        remediation_approval_request: {
+            /** @default operator */
+            approved_by: string;
+            /** @default false */
+            confirm: boolean;
+        };
+        remediation_record: {
+            /** Format: uuid */
+            remediation_id: string;
+            action: components["schemas"]["remediation_action"];
+            /** @enum {string} */
+            status: "pending" | "rejected" | "applying" | "applied" | "failed";
+            requested_by: string;
+            approved_by?: string | null;
+            dry_run_output: string;
+            result: string;
+            error?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
         /** @description Dashboard statistics aggregate. */
         stats_response: {
             /** Format: int32 */
@@ -503,6 +896,72 @@ export interface components {
             version: string;
             /** @description LLM provider name (only present on llm-svc and gateway). */
             provider?: string | null;
+            /** @description K8s cluster connectivity status (connected | unreachable). */
+            cluster?: string | null;
+        };
+        /** @description Information about a configured LLM provider. */
+        provider_info: {
+            /** @enum {string} */
+            id: "mock" | "openai" | "anthropic" | "deepseek" | "openrouter";
+            /** @example OpenAI */
+            name: string;
+            /** @example gpt-4o-mini */
+            model: string;
+            /** @description Whether a usable API key is configured for this provider
+             *     (from the runtime config file or the environment).
+             *      */
+            available: boolean;
+            /** @description Current model choices supported by this provider. */
+            models?: {
+                id: string;
+                name: string;
+            }[];
+        };
+        /** @description Request to update the runtime LLM provider configuration.
+         *     The active provider, an optional API key and an optional model
+         *     override can be set. API keys are stored server-side and are
+         *     never returned by any GET endpoint.
+         *      */
+        provider_config_request: {
+            /**
+             * @description The provider to activate for future analyses.
+             * @enum {string}
+             */
+            provider: "mock" | "openai" | "anthropic" | "deepseek" | "openrouter";
+            /** @description API key for the selected provider. When present, it is
+             *     persisted (overwriting any stored key). Omit to keep the
+             *     stored key.
+             *      */
+            api_key?: string;
+            /**
+             * @description When true, removes any stored API key for the selected
+             *     provider. Ignored when api_key is present.
+             *
+             * @default false
+             */
+            clear_key: boolean;
+            /** @description Model override for the selected provider. When absent, the
+             *     current value is kept; when null, the default is restored.
+             *      */
+            model?: string | null;
+        };
+        /** @description Runtime LLM configuration status. Never contains API key values —
+         *     only whether each provider is available.
+         *      */
+        llm_config_status: {
+            /**
+             * @description The active provider for future analyses.
+             * @enum {string}
+             */
+            provider: "mock" | "openai" | "anthropic" | "deepseek" | "openrouter";
+            /** @description Active model override, if any. */
+            model?: string | null;
+            /**
+             * @description Whether the active provider comes from the runtime config file or the environment.
+             * @enum {string}
+             */
+            source?: "file" | "env";
+            providers: components["schemas"]["provider_info"][];
         };
         pagination_meta: {
             /**
@@ -596,6 +1055,64 @@ export interface operations {
                      *       "provider": "deepseek"
                      *     } */
                     "application/json": components["schemas"]["health_response"];
+                };
+            };
+        };
+    };
+    listTargets: {
+        parameters: {
+            query: {
+                kind: components["schemas"]["target_kind"];
+                /** @description Namespace for namespaced resources. Omit for cluster-scoped resources. */
+                namespace?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Target list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["target_list_response"];
+                };
+            };
+            500: components["responses"]["internal_error"];
+        };
+    };
+    getClusterStatus: {
+        parameters: {
+            query?: {
+                namespace?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Target cluster status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        cluster: "connected" | "unreachable";
+                        mode: string;
+                        kubeconfig?: string | null;
+                        context?: string | null;
+                        server?: string | null;
+                        namespace: string;
+                        permissions: {
+                            [key: string]: boolean;
+                        };
+                    };
                 };
             };
         };
@@ -873,7 +1390,7 @@ export interface operations {
                     "application/json": components["schemas"]["error"];
                 };
             };
-            /** @description A scenario is already applied. Reset first. */
+            /** @description This scenario is already applied. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -909,6 +1426,140 @@ export interface operations {
             500: components["responses"]["internal_error"];
         };
     };
+    createRemediation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["remediation_create_request"];
+            };
+        };
+        responses: {
+            /** @description Dry-run proposal created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["remediation_record"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["error"];
+                };
+            };
+            /** @description Dry-run rejected by policy or Kubernetes */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["error"];
+                };
+            };
+        };
+    };
+    getRemediation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                remediation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Remediation record */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["remediation_record"];
+                };
+            };
+            /** @description Remediation not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["error"];
+                };
+            };
+        };
+    };
+    approveRemediation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                remediation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["remediation_approval_request"];
+            };
+        };
+        responses: {
+            /** @description Remediation applied or failed with audit result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["remediation_record"];
+                };
+            };
+            /** @description Proposal is no longer pending or is already applying */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["error"];
+                };
+            };
+        };
+    };
+    rejectRemediation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                remediation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["remediation_approval_request"];
+            };
+        };
+        responses: {
+            /** @description Proposal rejected */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["remediation_record"];
+                };
+            };
+        };
+    };
     getStats: {
         parameters: {
             query?: {
@@ -928,6 +1579,89 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["stats_response"];
+                };
+            };
+            500: components["responses"]["internal_error"];
+        };
+    };
+    getSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current LLM configuration status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["llm_config_status"];
+                };
+            };
+            500: components["responses"]["internal_error"];
+        };
+    };
+    saveSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /** @example {
+                 *       "provider": "openai",
+                 *       "api_key": "sk-...",
+                 *       "model": "gpt-4o-mini"
+                 *     } */
+                "application/json": components["schemas"]["provider_config_request"];
+            };
+        };
+        responses: {
+            /** @description Configuration updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["llm_config_status"];
+                };
+            };
+            /** @description Invalid provider or model */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["error"];
+                };
+            };
+            500: components["responses"]["internal_error"];
+        };
+    };
+    listProviders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Provider list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["provider_info"][];
+                    };
                 };
             };
             500: components["responses"]["internal_error"];

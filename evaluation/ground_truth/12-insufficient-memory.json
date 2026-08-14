@@ -1,0 +1,13 @@
+{
+  "scenario_id": "12-insufficient-memory",
+  "name": "Insufficient Memory",
+  "description": "Memory request set to 999Gi, exceeding the capacity of the cluster node",
+  "true_root_cause": "No node has enough allocatable memory for the pod request",
+  "true_affected_component": "demo-app",
+  "true_failure_category": "resource",
+  "true_severity": "high",
+  "expected_log_patterns": ["FailedScheduling", "Insufficient memory", "Pending"],
+  "expected_event_reasons": ["FailedScheduling"],
+  "correct_remediation_keywords": ["memory", "requests", "resources", "deployment"],
+  "notes": "The oversized request prevents scheduling on the demo cluster."
+}

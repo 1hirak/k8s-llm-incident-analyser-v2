@@ -35,6 +35,8 @@ frontend/out/
 
 # Docker
 *.log
+.playwright-mcp/
+.runtime/
 
 # Coverage
 coverage/
