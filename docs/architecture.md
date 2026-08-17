@@ -27,16 +27,16 @@ for every API, schema, and topology decision.
                    │ REST + SSE
                    ▼
             ┌────────────┐
-            │ gateway-svc│ :8000 — public API, CORS, rate limit, SSE proxy
+            │ gateway-svc│ :8000 — public API, auth, CORS, rate limit, SSE proxy
             └───┬───┬───┬┘
-     /api/jobs* │   │ /api/reports*, /api/stats   │ /api/scenarios*
+     /api/jobs* │   │ /api/reports*, /api/stats   │ /api/scenarios*, /api/remediations*
                 ▼   ▼                             ▼
-        ┌──────────────┐   ┌─────────────┐   ┌──────────────┐
-        │orchestrator- │──▶│ reports-svc │   │ scenario-svc │
-        │svc      :8001│   │        :8005│   │         :8006│
-        │              │   │ SQLite (WAL)│   │ kubectl patch│
-        │ Redis: jobs, │   └─────────────┘   │ (write RBAC) │
-        │ pub/sub, SSE │                     └──────────────┘
+        ┌──────────────┐   ┌─────────────┐   ┌──────────────────────────┐
+        │orchestrator- │──▶│ reports-svc │   │ scenario-svc :8006       │
+        │svc      :8001│   │        :8005│   │ demo-only fault patches  │
+        │              │   │ SQLite (WAL)│   │ remediation-svc :8008    │
+        │ Redis: jobs, │   └─────────────┘   │ dry-run + approved patch  │
+        │ pub/sub, SSE │                     └──────────────────────────┘
         └──┬───┬───┬───┘
   /collect │   │   │ /analyse
            ▼   │   ▼
@@ -47,7 +47,12 @@ for every API, schema, and topology decision.
    │(read RBAC)│ │
    └───────────┘ │ ┌────────┐
         /process └▶│processor│ :8003 — filter + redact (pure CPU)
-                   └────────┘
+                    └────────┘
+        ▲
+        │ unhealthy-pod jobs
+  ┌─────────────┐
+  │watcher-svc  │ :8007 — read-only namespace scanner
+  └─────────────┘
 ```
 
 ## Service Responsibilities
@@ -169,6 +174,11 @@ isolated from the `demo` namespace where the target workload runs:
 
 - **collector-svc** runs as `collector-sa` with a **read-only ClusterRole**
   (pods, pods/log, events, namespaces — get/list/watch only).
+- **watcher-svc** uses the same read-only evidence boundary to scan configured
+  namespaces and submit deduplicated jobs; it never mutates workloads.
+- **remediation-svc** runs as `remediation-sa` with a separate, namespace-
+  scoped Role that can read and patch Deployments only after a server-side
+  dry-run and an explicit operator approval.
 - **scenario-svc** runs as `scenario-sa` with a **Role scoped to the demo
   namespace** (deployments/services/configmaps — get/list/patch/update).
 - **reports-svc** is pinned to 1 replica (`Recreate`) with a PVC — SQLite
@@ -188,5 +198,6 @@ browser-reachable gateway address.
 - **gRPC/proto3** for internal calls (REST suffices at current throughput)
 - **AsyncAPI + Kafka/RabbitMQ** (Redis pub/sub + SSE suffices for fanout)
 - **PostgreSQL** (SQLite WAL suffices at ~10 analyses/day)
-- **Authentication** (v1 is open with CORS *; add API key/OIDC in v2)
+- **OIDC and ingress TLS** (external Compose already supports a gateway Bearer
+  token and restricted CORS; use an API gateway or OIDC for production SSO)
 - **Multi-worker job queue** (Redis list already in place for BRPOP scaling)

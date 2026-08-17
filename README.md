@@ -169,6 +169,7 @@ Copy `.env.example` to `.env`. Only the **llm-svc** holds external API keys.
 |--------|---------------------------------------|--------------------------------------|
 | GET    | `/health`                             | Liveness + configured LLM provider   |
 | GET    | `/api/cluster/status?namespace=...`    | Target API/auth/RBAC diagnostics      |
+| GET    | `/api/targets?kind=...&namespace=...` | List supported cluster diagnosis targets |
 | POST   | `/api/jobs`                           | Start an analysis job (202 + job_id) |
 | GET    | `/api/jobs`                           | List jobs (paginated, filterable)    |
 | GET    | `/api/jobs/{job_id}`                  | Job state                            |
@@ -182,6 +183,10 @@ Copy `.env.example` to `.env`. Only the **llm-svc** holds external API keys.
 | GET    | `/api/settings`                       | Active LLM provider + availability   |
 | POST   | `/api/settings`                       | Set provider, API key, model override|
 | GET    | `/api/settings/providers`             | List providers with availability     |
+| POST   | `/api/remediations`                   | Create a typed, server-side dry-run proposal |
+| GET    | `/api/remediations/{remediation_id}`  | Read remediation proposal and audit state |
+| POST   | `/api/remediations/{remediation_id}/approve` | Approve and apply a proposal (`confirm: true`) |
+| POST   | `/api/remediations/{remediation_id}/reject` | Reject a pending proposal |
 
 All errors are RFC 7807 Problem Details. Full spec:
 [`contracts/api/gateway.yaml`](contracts/api/gateway.yaml).
@@ -278,7 +283,7 @@ k8s-llm-incident-analyser/
 │   ├── orchestrator/         # :8001 pipeline coordinator + SSE (Redis)
 │   ├── collector/            # :8002 kubectl evidence collector
 │   ├── processor/            # :8003 preprocessing + redaction
-│   ├── llm/                  # :8004 LLM providers (mock/openai/anthropic/deepseek)
+│   ├── llm/                  # :8004 LLM providers (mock/openai/anthropic/deepseek/openrouter)
 │   ├── reports/              # :8005 SQLite persistence
 │   └── scenario/             # :8006 fault scenario management
 │   ├── watcher/              # :8007 read-only continuous unhealthy-pod watcher

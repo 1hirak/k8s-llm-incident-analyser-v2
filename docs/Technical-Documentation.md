@@ -145,21 +145,26 @@ There is no message broker and no gRPC in v1 of the platform — both are delibe
 
 ### Deployment Topology (Docker Compose)
 
-The reference topology is an 11-container Compose stack (7 platform services + Redis + frontend + the demo workload with its PostgreSQL). The SSOT lives in [`contracts/infra/docker-compose.yml`](../contracts/infra/docker-compose.yml); the repo-root `docker-compose.yml` mirrors it with repo-relative build contexts.
+The reference topology is a 13-container Compose stack (9 platform services +
+Redis + frontend + the demo workload with its PostgreSQL). The SSOT lives in
+[`contracts/infra/docker-compose.yml`](../contracts/infra/docker-compose.yml);
+the repo-root `docker-compose.yml` mirrors it with repo-relative build contexts.
 
 ```mermaid
 flowchart TD
     Browser["Browser"] -->|"http://localhost:3000"| FE
 
-    subgraph Compose["Docker Compose — analyser-net (11 containers)"]
+    subgraph Compose["Docker Compose — analyser-net (13 containers)"]
         FE["frontend :3000<br>Next.js 15 standalone (node server.js)"]
-        GW["gateway-svc :8000<br>public API · CORS · 60 req/min/IP · SSE proxy"]
+        GW["gateway-svc :8000<br>public API · auth/CORS · 60 req/min/IP · SSE proxy"]
         ORCH["orchestrator-svc :8001<br>job state machine · SSE pub/sub"]
         REPO["reports-svc :8005<br>SQLite (WAL) · ./data:/data"]
         SCEN["scenario-svc :8006<br>kubectl patch · kubeconfig mount (ro)"]
         COLL["collector-svc :8002<br>kubectl · kubeconfig mount (ro)"]
         PROC["processor-svc :8003<br>pure CPU"]
-        LLM["llm-svc :8004<br>4 LLM providers"]
+        LLM["llm-svc :8004<br>5 LLM providers"]
+        WATCH["watcher-svc :8007<br>read-only unhealthy-pod scanner"]
+        REM["remediation-svc :8008<br>typed dry-run + approval"]
         REDIS[("Redis :6379 — job hashes + pub/sub<br>redis:7-alpine, AOF, allkeys-lru")]
         DEMO["demo-app :8080 — fault target, NOT platform"]
         DB[("demo-db — postgres:16-alpine, NOT platform")]
@@ -169,6 +174,8 @@ flowchart TD
     GW -->|"/api/jobs*"| ORCH
     GW -->|"/api/reports*, /api/stats"| REPO
     GW -->|"/api/scenarios*"| SCEN
+    GW -->|"/api/remediations*"| REM
+    WATCH -->|"POST /jobs"| ORCH
     ORCH -->|"POST /reports, /jobs"| REPO
     ORCH -->|"POST /collect"| COLL
     ORCH -->|"POST /process"| PROC
@@ -181,11 +188,11 @@ flowchart TD
 
 | Service | Port | Responsibility | State | External calls |
 |---------|------|----------------|-------|----------------|
-| gateway | 8000 | Public API; proxies to internal services; CORS `*`; sliding-window rate limit; SSE passthrough with anti-buffering headers | — | orchestrator, reports, scenario (proxy); llm + collector (`/health` aggregation) |
+| gateway | 8000 | Public API; deployment-configured Bearer auth/CORS; sliding-window rate limit; SSE passthrough with anti-buffering headers | — | orchestrator, reports, scenario, remediation (proxy); llm + collector (`/health` aggregation) |
 | orchestrator | 8001 | Job lifecycle (7-state machine); coordinates collector→processor→llm→reports; publishes Redis events; archives terminal state | Redis | collector, processor, llm, reports |
 | collector | 8002 | Wraps kubectl subprocess; pod name auto-resolution via label selector | — | kube-apiserver (read) |
 | processor | 8003 | Noise/signal log filtering with context windows; secret/PII redaction (7 categories) | — | none (pure CPU) |
-| llm | 8004 | Provider integrations + prompt building + output validation; holds all external API keys | — | OpenAI / Anthropic / DeepSeek APIs |
+| llm | 8004 | Provider integrations + prompt building + output validation; holds all external API keys | — | OpenAI / Anthropic / DeepSeek / OpenRouter APIs |
 | reports | 8005 | Owns SQLite (single writer, WAL); reports + job snapshots; dashboard stats | SQLite | none |
 | scenario | 8006 | Lists/applies/resets fault scenarios via kubectl strategic-merge patch; tracks active scenario (409 on conflict) | in-memory | kube-apiserver (write) |
 | watcher | 8007 | Read-only namespace-scoped unhealthy-pod scanner; deduplicates and submits jobs | Redis cooldown keys | kube-apiserver (read) |
@@ -196,7 +203,11 @@ flowchart TD
 
 1. **Only gateway-svc is public.** Internal services bind to the Compose network / cluster DNS; nothing external routes to them. In Kubernetes, only gateway (NodePort 30080) and frontend (NodePort 30030) are exposed.
 2. **Secrets flow one way.** `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` exist only in llm-svc's environment. Evidence is redacted by processor-svc *before* llm-svc (and therefore any vendor) sees it.
-3. **Cluster access is split by least privilege.** collector-svc runs with a read-only ClusterRole (pods, pods/log, events — get/list/watch). scenario-svc runs with a Role scoped to the `demo` namespace (patch on deployments/services/configmaps; no delete). No other service has any cluster credentials.
+3. **Cluster access is split by least privilege.** collector-svc and
+   watcher-svc use read-only credentials for pods, pod logs, and events.
+   scenario-svc is scoped to demo-only fault injection. remediation-svc has a
+   separate namespace-scoped identity that can read and patch Deployments only
+   for typed, approved actions; it never executes free-form LLM commands.
 4. **Database ownership.** reports-svc is the single writer to the SQLite file; every other service goes through its HTTP API. Redis is owned by orchestrator-svc.
 5. **Authentication is deployment-configured.** Development may leave
    `GATEWAY_API_TOKEN` empty, while external-cluster deployments require a
@@ -210,7 +221,7 @@ flowchart TD
 | Asynchronous jobs (`202` + SSE) instead of synchronous analysis | LLM calls take 2–30 s; browsers and proxies time out; progress is UX-valuable | More moving parts: Redis, job state machine, SSE |
 | Redis as primary job store, SQLite as durable snapshot | Sub-ms hash reads for polling; pub/sub gives free SSE fanout; list pre-seeds v2 worker scaling | Two stores to keep consistent (archival is best-effort) |
 | Monorepo shared kernel (`k8s-llm-shared`) instead of per-service models | Zero schema drift; the contract is importable code | All services rebuild when shared changes |
-| kubectl-as-subprocess instead of the Python client | Battle-tested auth (kubeconfig contexts, exec plugins, OIDC), no client-library version skew | Requires the kubectl binary in collector/scenario images |
+| kubectl-as-subprocess instead of the Python client | Battle-tested auth (kubeconfig contexts, exec plugins, OIDC), no client-library version skew | Requires the kubectl binary in collector/watcher/remediation/scenario images |
 | SQLite WAL instead of PostgreSQL | ~10 analyses/day at dissertation scale; zero-ops; single-writer is trivially safe | Does not scale horizontally (pinned 1 replica) |
 | REST instead of gRPC; Redis pub/sub instead of Kafka | Call frequency is ~10/day; latency is dominated by the LLM call | Revisit when throughput grows (migration plans written) |
 
@@ -218,14 +229,16 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    subgraph Services["7 Microservices (services/)"]
-        GW["gateway-svc :8000<br>public entry, CORS, rate limit, SSE proxy"]
+    subgraph Services["9 Microservices (services/)"]
+        GW["gateway-svc :8000<br>public entry, auth/CORS, rate limit, SSE proxy"]
         ORCH["orchestrator-svc :8001<br>job state machine, pipeline coordinator"]
         COLL["collector-svc :8002<br>kubectl subprocess wrapper"]
         PROC["processor-svc :8003<br>noise filter + PII redactor"]
-        LLM["llm-svc :8004<br>4 LLM providers, prompts, validation"]
+        LLM["llm-svc :8004<br>5 LLM providers, prompts, validation"]
         REPO["reports-svc :8005<br>SQLite single-writer, stats"]
         SCEN["scenario-svc :8006<br>kubectl patch, apply/reset faults"]
+        WATCH["watcher-svc :8007<br>read-only scan, deduplicated jobs"]
+        REM["remediation-svc :8008<br>typed dry-run, approved patches"]
     end
 
     subgraph Shared["Shared Kernel"]
@@ -312,7 +325,7 @@ flowchart TD
 | Test doubles | fakeredis | >=2.26 | In-memory Redis for tests |
 | Test runner (TS) | Vitest + Testing Library | ^4.1.10 | jsdom component tests |
 | Linter/formatter | ruff | 0.8.* | `select = E,F,I,N,W`, line-length 100 |
-| Containers | Docker + Compose v2 | — | 11-container reference stack |
+| Containers | Docker + Compose v2 | — | 13-container reference stack |
 | CI | GitHub Actions | — | 9-suite pytest matrix + frontend build + Docker publish |
 | Registry | GHCR | ghcr.io | 8 published images (`ghcr.io/<repo>/<name>-svc:latest`) |
 
@@ -481,7 +494,7 @@ The five pillars:
 - **4.5 Timestamps** — ISO 8601 strings (`2026-07-21T10:05:33Z`), stored TEXT via `datetime('now')`, never Unix epochs.
 - **4.6 Errors** — RFC 7807 Problem Details on all 4xx/5xx: `type` (`https://errors.k8s-llm.io/<slug>`), `title`, `status`, `detail`, optional `instance`.
 - **4.7 Pagination** — envelope `{items, count, limit, offset}`; `?limit=20&offset=0`; default 20, max 100.
-- **4.8 Health** — every service exposes `GET /health` → `{status: "ok", service: "<name>-svc", version}`; llm-svc adds `provider`/`model`, collector/scenario/gateway may add `cluster`.
+- **4.8 Health** — every service exposes `GET /health` → `{status: "ok", service: "<name>-svc", version}`; llm-svc adds `provider`/`model`, and collector/watcher/gateway may add cluster connectivity.
 
 Versioning is semver in `contracts/VERSION` (currently `1.0.0`): breaking → major, additive → minor, clarification → patch. Breaking changes require the version bump, downstream PRs, and coordinated deployment.
 
@@ -795,7 +808,7 @@ Service-specific extras:
 
 ### Docker Compose Stack
 
-`docker-compose.yml` (mirrors `contracts/infra/docker-compose.yml`) defines 11 containers on one bridge network (`analyser-net`):
+`docker-compose.yml` (mirrors `contracts/infra/docker-compose.yml`) defines 13 containers on one bridge network (`analyser-net`):
 
 | Container | Image | Ports | Notable wiring |
 |-----------|-------|-------|----------------|
@@ -1861,7 +1874,7 @@ See [Section 6](#6-build--tooling). The Compose file mirrors `contracts/infra/do
 | **Docker Compose** | v5.3.1 |
 | **K3s** | v1.36.2+k3s1 |
 
-The dissertation deployment runs on a single EC2 instance: **k3s** for the cluster, the Compose stack for the platform, k3s's kubeconfig copied to `~/.kube/config` and bind-mounted into collector/scenario. The gateway's public spec lists `http://18.133.255.70:8000` as a server.
+The dissertation deployment runs on a single EC2 instance: **k3s** for the cluster and the Compose stack for the platform. The local demo uses a generated kubeconfig; external deployments mount least-privilege kubeconfigs into collector/watcher and a separate remediation kubeconfig. The gateway's public spec lists `http://18.133.255.70:8000` as a server.
 
 ### Why k3s Instead of Minikube
 
@@ -1869,7 +1882,7 @@ Minikube requires ~2 GB of RAM for its VM; the t3.small has 1.9 GB total. k3s is
 
 ### Container-to-Cluster Connectivity
 
-collector/scenario containers run kubectl against the host's cluster via two read-only bind mounts: `${HOME}/.kube/config` and `${HOME}/.minikube` (cert files). In-cluster deployment uses the ServiceAccounts instead ([Section 22](#22-kubernetes-integration)).
+collector, watcher, scenario, and remediation containers run `kubectl`. In external Compose, collector/watcher receive the read-only target kubeconfig and remediation receives a separate mutation-scoped kubeconfig; all mounts are read-only. In-cluster deployment uses ServiceAccount credentials instead ([Section 22](#22-kubernetes-integration)).
 
 **Subtle gotcha**: Docker creates a **directory** at a bind-mount point if the source file does not exist at container start time. Ensure `/root/.kube/config` exists on the host before `docker compose up`, or recreate the container with `--force-recreate` after creating the file.
 
@@ -2040,7 +2053,7 @@ Measured end-to-end on k3s (AWS EC2) with DeepSeek `deepseek-chat`; pipeline sem
 | **Scenario 10 (wrong-port) undetectable** | Collector inspects pods only, not Services/EndpointSlices | Medium — affects 1/10 scenarios |
 | **No Service/Endpoint/ConfigMap collection** | ConfigMap and Service misconfigurations require separate collection methods | Medium |
 | **No retry/backoff in LLM providers** | Transient API failures (429, 503) cause immediate job failure | Medium |
-| **No authentication on the public API** | Anyone with network access can trigger analysis or inject faults | Medium (acceptable for dissertation; production would add API key/OIDC) |
+| **No OIDC or ingress TLS** | External deployments use a gateway Bearer token and restricted CORS, but lack centralized identity or transport termination | Medium (use a production ingress/API gateway with OIDC and TLS) |
 | **CORS wildcard** | `allow_origins=["*"]` is insecure for production | Low (configurable) |
 | **scenario-svc active-state is in-memory** | Service restart forgets the applied scenario; the 409 guard can be bypassed by a restart (and a second replica would break it) | Low–Medium |
 | **`job:queue` is written but never consumed** | LPUSHed on every job; no BRPOP consumer in v1 — dead weight until worker scaling lands | Low (deliberate seed for v2) |

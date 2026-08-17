@@ -210,7 +210,7 @@ Breaking changes require:
 
 ## 6. How Services Consume These Contracts
 
-### Python services (gateway, orchestrator, collector, processor, llm, reports, scenario)
+### Python services (gateway, orchestrator, collector, processor, llm, reports, scenario, watcher, remediation)
 
 This is a **monorepo**: all services live under `services/`. Each service
 imports the shared Pydantic models from the local shared package

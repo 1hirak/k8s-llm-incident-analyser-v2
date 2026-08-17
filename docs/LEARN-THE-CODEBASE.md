@@ -17,8 +17,10 @@ The project is both:
 - A small incident-investigation product for on-call engineers.
 - A research project for comparing an LLM with simpler classifiers.
 
-It is **not** the system that detects the first alert. An alert or an engineer
-starts the analysis. The analyser then investigates the selected pod.
+An alert or an engineer can start the analysis. In an external deployment, the
+optional, read-only watcher can also detect unhealthy pods in configured
+namespaces and submit deduplicated analysis jobs. The analyser then
+investigates the selected pod.
 
 ## 2. The Mental Model
 
@@ -34,6 +36,8 @@ Imagine a team investigating a broken machine:
 | LLM service | Specialist who explains the clues |
 | Reports service | Filing cabinet that stores the final answer |
 | Scenario service | Test operator that deliberately breaks the demo app |
+| Watcher service | Read-only scanner that starts jobs for unhealthy pods |
+| Remediation service | Guarded change operator that dry-runs and awaits approval |
 | Redis | Temporary whiteboard for job progress |
 | SQLite | Permanent filing cabinet for reports |
 
@@ -58,9 +62,11 @@ flowchart TD
     Orchestrator[Orchestrator :8001<br/>job coordinator]
     Collector[Collector :8002<br/>kubectl evidence]
     Processor[Processor :8003<br/>filter and redact]
-    LLM[LLM service :8004<br/>mock/OpenAI/Anthropic/DeepSeek]
+    LLM[LLM service :8004<br/>mock/OpenAI/Anthropic/DeepSeek/OpenRouter]
     Reports[Reports :8005<br/>SQLite]
     Scenario[Scenario :8006<br/>fault injection]
+    Watcher[Watcher :8007<br/>read-only unhealthy-pod scan]
+    Remediation[Remediation :8008<br/>dry-run + approved changes]
     Redis[(Redis<br/>job state + pub/sub)]
     SQLite[(SQLite<br/>reports + job snapshots)]
     K8s[(Kubernetes cluster<br/>demo namespace)]
@@ -70,6 +76,8 @@ flowchart TD
     Gateway --> Orchestrator
     Gateway --> Reports
     Gateway --> Scenario
+    Gateway --> Remediation
+    Watcher --> Orchestrator
     Orchestrator --> Collector
     Orchestrator --> Processor
     Orchestrator --> LLM
@@ -77,13 +85,15 @@ flowchart TD
     Orchestrator <--> Redis
     Reports --> SQLite
     Collector -->|read-only kubectl| K8s
+    Watcher -->|read-only kubectl| K8s
     Scenario -->|patch/reset kubectl| K8s
+    Remediation -->|typed Deployment patch after approval| K8s
     K8s --> Demo
 
     classDef app fill:#e8f1ff,stroke:#2b5fab,color:#111;
     classDef store fill:#fff3cd,stroke:#9a7200,color:#111;
     classDef cluster fill:#e8f8ee,stroke:#27834a,color:#111;
-    class Browser,Gateway,Orchestrator,Collector,Processor,LLM,Reports,Scenario app;
+    class Browser,Gateway,Orchestrator,Collector,Processor,LLM,Reports,Scenario,Watcher,Remediation app;
     class Redis,SQLite store;
     class K8s,Demo cluster;
 ```

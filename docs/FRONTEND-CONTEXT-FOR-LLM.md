@@ -49,17 +49,19 @@ browser as Server-Sent Events, so the UI shows a live pipeline timeline.
 
 ## 2. System architecture (what the frontend talks to)
 
-Seven FastAPI microservices + Redis + SQLite + the Next.js frontend:
+Nine FastAPI microservices + Redis + SQLite + the Next.js frontend:
 
 ```
 Browser → frontend (Next.js 15, :3000)
-        → gateway-svc (:8000)  public API, CORS, rate limit, SSE proxy
+          → gateway-svc (:8000)  public API, auth, CORS, rate limit, SSE proxy
           ├→ orchestrator-svc (:8001)  job state machine + SSE pub/sub (Redis)
           │    ├→ collector-svc (:8002)  kubectl evidence collection
           │    ├→ processor-svc (:8003)  filtering + redaction
-          │    └→ llm-svc (:8004)        LLM providers (mock/openai/anthropic/deepseek)
-          ├→ reports-svc (:8005)  SQLite (WAL) persistence
-          └→ scenario-svc (:8006) kubectl patch fault injection
+           │    └→ llm-svc (:8004)        LLM providers (mock/openai/anthropic/deepseek/openrouter)
+           ├→ reports-svc (:8005)  SQLite (WAL) persistence
+           └→ scenario-svc (:8006) kubectl patch fault injection
+           ├→ remediation-svc (:8008) typed dry-run and approved Deployment changes
+           └→ watcher-svc (:8007) read-only unhealthy-pod scan → orchestrator jobs
 Redis :6379 — job state hashes (24h TTL) + pub/sub event channels
 SQLite      — incidents + analysis_jobs (owned by reports-svc)
 ```
@@ -74,6 +76,7 @@ Redis schema). The frontend's TypeScript types are generated from
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | Liveness + LLM provider + cluster connectivity |
+| GET | `/api/targets` | List diagnosis targets by kind and namespace |
 | POST | `/api/jobs` | Start analysis (202 + `job_id`) |
 | GET | `/api/jobs` | List jobs (paginated, `status` filter) |
 | GET | `/api/jobs/{job_id}` | Job state |
@@ -86,9 +89,16 @@ Redis schema). The frontend's TypeScript types are generated from
 | POST | `/api/scenarios/reset` | Reset cluster to healthy baseline |
 | GET/POST | `/api/settings` | Get/update LLM provider config (keys never echoed) |
 | GET | `/api/settings/providers` | List providers + key-availability status |
+| POST | `/api/remediations` | Create a typed, server-side dry-run remediation proposal |
+| GET | `/api/remediations/{remediation_id}` | Read proposal and audit state |
+| POST | `/api/remediations/{remediation_id}/approve` | Approve and apply with `confirm: true` |
+| POST | `/api/remediations/{remediation_id}/reject` | Reject a pending proposal |
 
 All errors are RFC 7807 Problem Details (`type`, `title`, `status`,
-`detail`, `instance`). No authentication in v1; CORS is `*`.
+`detail`, `instance`). Development can leave `GATEWAY_API_TOKEN` unset;
+external-cluster deployments require Bearer-token access and restricted CORS.
+The remediation APIs record `X-Operator-Id` as the proposal and approval audit
+identity.
 
 ### Key data models (from the OpenAPI contract)
 
@@ -479,7 +489,9 @@ components. Run with `npm run test` (vitest run).
     legends/interactions beyond tooltip).
 12. **Mobile nav is a horizontal scroll row** — works, but a drawer/sheet
     pattern may scale better (now more noticeable with 7 nav items).
-13. **No authentication/user concept** in the UI (matches backend v1).
+13. **No full user-management UI**. External deployments require a gateway
+    Bearer token; operator identities for remediation are passed through
+    `X-Operator-Id`. OIDC-backed user management remains future work.
 14. **Settings page: no "test connection" action** — users save a key and
     only find out it works when the next analysis runs; provider cards show
     no latency/model metadata beyond the default model string.

@@ -6,7 +6,11 @@
 
 ## 1. Where This Fits Inside Your Existing K8s Cluster
 
-This tool deploys as **one extra namespace** (`analyser`) with RBAC-scoped access to read pod logs and optionally inject faults in a test namespace. It does not replace your monitoring — it sits **downstream of alerts** and provides automated root-cause diagnosis via an LLM.
+This tool deploys as **one extra namespace** (`analyser`) with RBAC-scoped
+read access to target workloads, optional demo-only fault injection, and an
+opt-in approval-gated remediation path. It does not replace monitoring: alerts
+or the built-in read-only watcher can trigger automated root-cause diagnosis
+via an LLM.
 
 ```mermaid
 graph TB
@@ -27,8 +31,10 @@ graph TB
             coll["collector :8002<br/>kubectl evidence"]
             proc["processor :8003<br/>redaction + filter"]
             llm["llm :8004<br/>OpenAI / Anthropic"]
-            reports["reports :8005<br/>PostgreSQL"]
+            reports["reports :8005<br/>SQLite"]
             scenario["scenario :8006<br/>fault injection"]
+            watcher["watcher :8007<br/>read-only scan"]
+            remediation["remediation :8008<br/>dry-run + approval"]
             redis[("Redis<br/>job state + queue")]
 
             gateway --> orch
@@ -37,7 +43,8 @@ graph TB
             orch --> llm
             orch --> reports
             orch <--> redis
-            reports --> pg[("PostgreSQL")]
+            reports --> sqlite[("SQLite")]
+            watcher --> orch
         end
 
         subgraph MONITORING["monitoring namespace"]
@@ -51,7 +58,9 @@ graph TB
 
     coll -.->|"🔍 kubectl logs/describe (READ)"| orders
     coll -.->|"🔍 kubectl logs/describe (READ)"| payments
+    watcher -.->|"🔍 kubectl pod status (READ)"| APPS
     scenario -.->|"🔧 kubectl patch (demo ns only)"| APPS
+    remediation -.->|"🔧 typed Deployment patch (approved)"| APPS
     llm -.->|"🔗 HTTPS"| ext["☁️ api.openai.com"]
 ```
 
@@ -61,6 +70,8 @@ graph TB
 graph LR
     subgraph ANALYSER["analyser namespace"]
         collector["collector-sa"]
+        watcher["watcher-sa"]
+        remediation["remediation-sa"]
         scenario["scenario-sa"]
     end
 
@@ -72,6 +83,9 @@ graph LR
 
     collector -->|"ClusterRole<br/>✓ pods, pods/log, events<br/>✓ get, list, watch<br/>✗ write ✗ delete"| prod
     collector -->|"same ClusterRole"| staging
+    watcher -->|"read-only Role/ClusterRole<br/>✓ pods, events<br/>✓ get, list, watch<br/>✗ write ✗ delete"| prod
+    watcher -->|"same read-only permissions"| staging
+    remediation -->|"Role in approved namespaces<br/>✓ deployments get, patch<br/>✓ rollout reads<br/>✗ arbitrary commands"| prod
     scenario -->|"Role (demo ns only)<br/>✓ deployments<br/>✓ configmaps<br/>✓ patch, update"| demo
 ```
 
@@ -742,7 +756,11 @@ No. Monitoring detects problems. This tool diagnoses root causes.
 No. The processor service redacts API keys, passwords, tokens, and connection strings before sending evidence to the LLM provider.
 
 **Can it modify my production workloads?**
-No. The collector is read-only. The scenario service only patches a designated test namespace (default: `demo`).
+Only when explicitly enabled and approved. The collector and watcher are
+read-only, and the scenario service only patches the test namespace. The
+separate remediation service accepts only typed Deployment actions, performs a
+Kubernetes server-side dry-run, and applies a change only after an operator
+submits `confirm: true`. It never executes LLM `recommended_commands`.
 
 **What if my cluster has no outbound internet?**
 Only the LLM service calls external APIs. For air-gapped clusters, run a local LLM (Ollama/vLLM) instead.

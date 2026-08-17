@@ -248,7 +248,7 @@ looks like, don't read three services — read one model in
                           ▼
                   ┌───────────────┐
                   │  gateway-svc  │  :8000 · NodePort 30080
-                  │  CORS *       │  60 req/min/IP sliding-window rate limit
+                  │ auth + CORS   │  60 req/min/IP sliding-window rate limit
                   │  SSE proxy    │  RFC 7807 translation
                   └──┬────┬────┬──┘
         /api/jobs*   │    │    │  /api/reports* · /api/stats   /api/scenarios*
@@ -275,7 +275,7 @@ looks like, don't read three services — read one model in
    SQLite       — incidents + analysis_jobs (owned exclusively by reports-svc)
 ```
 
-**Seven FastAPI services + shared package + Redis + SQLite + Next.js
+**Nine FastAPI services + shared package + Redis + SQLite + Next.js
 frontend.** Two more compose services (`demo-app`, `db` = PostgreSQL 16)
 are the *target workload*, not platform infrastructure.
 
@@ -286,7 +286,7 @@ traffic:
 
 | Plane | Technology | Used for | Why chosen |
 |-------|-----------|----------|------------|
-| **Request plane** | Synchronous REST (OpenAPI-specified) | All service-to-service calls: gateway→orchestrator/reports/scenario, orchestrator→collector/processor/llm/reports | Simple, debuggable, contract-specified; LLM latency (~6s) dwarfs HTTP overhead |
+| **Request plane** | Synchronous REST (OpenAPI-specified) | All service-to-service calls: gateway→orchestrator/reports/scenario/remediation, watcher→orchestrator, orchestrator→collector/processor/llm/reports | Simple, debuggable, contract-specified; LLM latency (~6s) dwarfs HTTP overhead |
 | **Event plane** | Redis pub/sub → SSE | Job stage transitions fanned out to browsers | Sub-ms fanout to N clients; no broker needed at this scale |
 | **State plane** | Redis hashes (hot) + SQLite WAL (durable) | Job state (24h TTL) and report/job history | Redis = fast reads + pub/sub; SQLite = queryable history, single writer |
 
@@ -294,29 +294,31 @@ traffic:
 
 | Service | Port | Owns | Never does | State |
 |---------|------|------|-----------|-------|
-| gateway | 8000 | Public API surface, CORS, rate limit, SSE passthrough | Business logic; it only proxies | — |
+| gateway | 8000 | Public API surface, deployment-configured auth/CORS, rate limit, SSE passthrough | Business logic; it only proxies | — |
 | orchestrator | 8001 | Job lifecycle (7-state machine), pipeline coordination, SSE publishing, job archival | Touch SQLite directly; parse logs; call LLMs | Redis |
 | collector | 8002 | `kubectl` subprocess calls; pod-name→label resolution | Filtering/redaction (that's processor) | — |
 | processor | 8003 | Noise/signal log filtering, context windows, PII/secret redaction | Cluster access; LLM calls | — |
 | llm | 8004 | Provider SDKs, prompt building, output validation; **all API keys** | Persistence; cluster access | — |
 | reports | 8005 | SQLite (single writer), reports, job snapshots, stats | Redis; LLM calls | SQLite |
 | scenario | 8006 | Fault scenario list/apply/reset via `kubectl patch` | Analysis (it breaks things; it doesn't diagnose them) | in-memory active-scenario lock |
+| watcher | 8007 | Read-only unhealthy-pod scan; deduplicated job submission | Mutate cluster resources or run remediation | Redis cooldown keys |
+| remediation | 8008 | Typed server-side dry-run and explicit approved Deployment changes | Execute free-form LLM commands | Redis proposals |
 | frontend | 3000 | Dashboard UX, SSE consumption, type-safe API client | Talk to internal services — gateway only | — |
 
 ### 5.4 Trust boundaries and security model
 
 - **Only the gateway is public.** Internal services bind to the Docker
   network / ClusterIP; the frontend *only* knows the gateway URL.
-- **Only llm-svc holds secrets.** `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
-  / `DEEPSEEK_API_KEY` are injected into exactly one container. The
+- **Only llm-svc holds LLM API keys.** `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
+  / `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` are injected into exactly one container. The
   redactor exists so that *evidence* secrets (DB URLs, tokens in logs)
   never leave the cluster either.
-- **Kubernetes RBAC is split deliberately** (see §14): collector gets a
-  **read-only** ClusterRole; scenario gets a **write Role scoped to the
-  `demo` namespace only**. A compromised analyser can't touch the rest of
-  the cluster.
-- **No authentication in v1** — CORS is `*` and endpoints are open.
-  This is an explicit, documented v2 deferral (API key/OIDC).
+- **Kubernetes RBAC is split deliberately** (see §14): collector and watcher
+  are read-only; scenario is limited to demo-only fault injection; remediation
+  uses a separate namespace-scoped identity for typed Deployment patches.
+- **Authentication is deployment-configured.** Development can be open, while
+  external-cluster Compose requires a gateway Bearer token and restricted CORS;
+  ingress TLS/OIDC remains a production hardening recommendation.
 - **Rate limiting** at the gateway: 60 requests/minute per IP over a
   sliding 60s window, in-memory (per-replica; a distributed limiter is
   v2). `/health` and CORS preflight are exempt.
@@ -494,7 +496,7 @@ JobStatus       = "queued" | "collecting" | "processing" | "llm_call"
                 | "persisting" | "done" | "failed"                   # 7
 EvidenceSource  = "pod_log" | "previous_pod_log"
                 | "kubernetes_event" | "pod_status"                  # 4
-ProviderId      = "mock" | "openai" | "anthropic" | "deepseek"       # 4
+ProviderId      = "mock" | "openai" | "anthropic" | "deepseek" | "openrouter" # 5
 ```
 
 ### The canonical output: `IncidentReport`
@@ -509,8 +511,9 @@ ProviderId      = "mock" | "openai" | "anthropic" | "deepseek"       # 4
 | `severity` | enum(4) | — | Triage priority |
 | `confidence` | float | 0.0–1.0 | LLM self-assessment; prompt rules demand lower values on ambiguity |
 | `supporting_evidence` | list[`EvidenceItem`] | ≥1 item | Cited proof — every claim must trace to collected evidence |
-| `suggested_fix` | str | — | Human-executable remediation (never auto-applied) |
-| `recommended_commands` | list[str] | — | kubectl commands (dashboard shows "review before running") |
+| `suggested_fix` | str | — | Human-executable guidance; never auto-applied |
+| `recommended_commands` | list[str] | — | kubectl guidance; never executed by the platform |
+| `recommended_actions` | list[`RemediationAction`] | optional | Typed proposals may be dry-run and require explicit approval |
 | `human_verification_steps` | list[str] | — | Checklist to confirm the fix worked |
 | `created_at` | ISO str | default factory | Generation time |
 
@@ -1055,15 +1058,16 @@ Every service has an identical `pytest.ini` (`asyncio_mode=auto`).
 
 ### Docker Compose (the reference topology)
 
-`docker-compose.yml` runs **11 containers** on one bridge network
-(`analyser-net`): the 7 services + frontend + Redis + demo-app +
+`docker-compose.yml` runs **13 containers** on one bridge network
+(`analyser-net`): the 9 services + frontend + Redis + demo-app +
 PostgreSQL. Notable wiring:
 
 - Every service has a `urllib`-based healthcheck; `depends_on:
   service_healthy` chains boot order (Redis → pipeline services →
   orchestrator → gateway → frontend).
-- collector/scenario mount `${HOME}/.kube/config` (+ minikube certs)
-  read-only so they can `kubectl` from inside containers.
+- collector, watcher, scenario, and remediation use `kubectl`. The local demo
+  uses the generated minikube kubeconfig; external Compose mounts distinct,
+  read-only least-privilege kubeconfigs for collector/watcher and remediation.
 - scenario additionally mounts `./k8s` and `./evaluation` read-only
   (patches + ground truth).
 - reports mounts `./data:/data` (SQLite lives on the host); Redis has a
@@ -1089,7 +1093,8 @@ RBAC (the security centrepiece):
 
 | ServiceAccount | Scope | Verbs | Resources |
 |----------------|-------|-------|-----------|
-| `collector-sa` | ClusterRole (read-only) | `get, list, watch` | pods, pods/log, events, namespaces |
+| `collector-sa` / `watcher-sa` | read-only Role/ClusterRole | `get, list, watch` | pods, pods/log, events, namespaces |
+| `remediation-sa` | target-namespace Role | `get, list, patch` | deployments and rollout reads |
 | `scenario-sa` | Role, `demo` namespace only | `get, list, patch, update` | deployments, services, configmaps |
 
 reports-svc is pinned to **1 replica with `Recreate`** strategy + PVC
@@ -1098,7 +1103,7 @@ reports-svc is pinned to **1 replica with `Recreate`** strategy + PVC
 
 ### Service Dockerfiles
 
-Identical pattern across the 7 services (`python:3.12-slim`, repo-root
+Identical pattern across the 9 services (`python:3.12-slim`, repo-root
 build context): `COPY services/shared /shared && pip install /shared`,
 then service `requirements.txt`, then `COPY services/<svc>/app ./app`,
 `CMD uvicorn app.main:app --host 0.0.0.0 --port <port>`. The shared
@@ -1147,8 +1152,9 @@ trap-based cleanup). The Makefile wraps everything: `install`, `dev`,
 Deliberate v1 trade-offs (documented in contracts as v2 deferrals) plus
 things that surprise first-time readers:
 
-1. **No authentication** — gateway is open with CORS `*`. Add API
-   key/OIDC in v2.
+1. **No OIDC or ingress TLS** — external Compose requires a gateway Bearer
+   token and restricted CORS, but production SSO and transport termination
+   still need an ingress or API gateway.
 2. **Jobs don't survive an orchestrator restart mid-flight** — the
    background `asyncio` task dies; Redis retains the last state (stuck at
    a non-terminal status until the 24h TTL). No resume logic in v1.
@@ -1260,7 +1266,7 @@ k8s-llm-incident-analyser/
 │   └── unit/                      # baselines, harness, metrics, demo app, manifest & drift guards
 │
 ├── scripts/                       # run_scenario.sh · e2e_smoke.sh
-├── docker-compose.yml             # 11-container full stack
+├── docker-compose.yml             # 13-container full stack
 ├── docker-compose.dev.yml         # hot-reload override
 ├── Makefile                       # every dev task
 ├── pyproject.toml                 # pytest + ruff config (root suite)

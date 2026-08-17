@@ -16,14 +16,17 @@ a report containing:
 - A suggested fix.
 - Useful `kubectl` commands and verification steps.
 
-It is an investigation assistant, not the alerting system. An engineer or an
-existing monitoring system starts the investigation.
+It is an investigation assistant, not a replacement for monitoring. An
+engineer can start an investigation manually, and external deployments can
+also have the read-only watcher scan configured namespaces and submit
+deduplicated investigations for unhealthy pods.
 
 ## How It Does It
 
 ```mermaid
 flowchart LR
     User[Engineer] --> UI[Web dashboard]
+    Watcher[Read-only watcher] --> Orchestrator
     UI --> Gateway[Gateway]
     Gateway --> Orchestrator[Orchestrator]
     Orchestrator --> Collector[Collect Kubernetes clues]
@@ -78,6 +81,7 @@ The LLM service sends the safe evidence to the configured provider:
 - OpenAI.
 - Anthropic.
 - DeepSeek.
+- OpenRouter.
 
 The response must match the project's `IncidentReport` structure. This prevents
 the result from being only free-form text.
@@ -113,6 +117,8 @@ in real time.
 | Processor | Filters logs and redacts secrets |
 | LLM service | Diagnoses the failure |
 | Reports service | Saves reports in SQLite |
+| Watcher service | Scans configured namespaces and submits deduplicated jobs |
+| Remediation service | Creates typed, server-side dry-run proposals and applies them only after operator approval |
 | Scenario service | Creates test failures in the demo app |
 | Redis | Holds temporary job state and live events |
 
